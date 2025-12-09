@@ -32,6 +32,13 @@ import {
   Select,
   MenuItem,
   InputAdornment,
+  FormHelperText,
+  ToggleButton,
+  ToggleButtonGroup,
+  Divider,
+  Checkbox,
+  FormControlLabel,
+  FormGroup,
 } from '@mui/material';
 import { 
   Refresh, 
@@ -51,6 +58,7 @@ import {
   Business,
   ArrowBack,
   Add,
+  Delete,
 } from '@mui/icons-material';
 import { AuthContext } from '../context/AuthContext';
 import { 
@@ -60,6 +68,7 @@ import {
   getClients, 
   getClient,
   getSchedules,
+  createSchedule,
   calculateUsage,
   getTechnicianAssignments,
   getTechnicianStats,
@@ -144,6 +153,23 @@ function TechnicianDashboard() {
     location: '',
     status: 'assigned',
   });
+  const [customScheduleDialogOpen, setCustomScheduleDialogOpen] = useState(false);
+  const [customScheduleForm, setCustomScheduleForm] = useState({
+    name: '',
+    type: 'custom',
+    scheduleType: 'time_based', // 'time_based' or 'interval_based'
+    duration_minutes: 120,
+    daily_cycles: 1,
+    ml_per_hour: '',
+    intervals: [{ spray_seconds: 20, pause_seconds: 40 }],
+    time_ranges: [
+      { start_time: '00:00', end_time: '06:00', spray_seconds: 20, pause_seconds: 40 },
+      { start_time: '06:00', end_time: '12:00', spray_seconds: 30, pause_seconds: 30 },
+      { start_time: '12:00', end_time: '15:00', spray_seconds: 50, pause_seconds: 20 },
+      { start_time: '15:00', end_time: '23:55', spray_seconds: 100, pause_seconds: 10 },
+    ],
+    days_of_week: [0, 1, 2, 3, 4, 5, 6], // All days selected by default (0=Monday, 6=Sunday)
+  });
 
   useEffect(() => {
     loadData();
@@ -170,6 +196,21 @@ function TechnicianDashboard() {
     window.addEventListener('tabChange', handleTabChange);
     return () => window.removeEventListener('tabChange', handleTabChange);
   }, []);
+
+  // Refresh schedules when installation dialog opens
+  useEffect(() => {
+    if (installationDialogOpen) {
+      const refreshSchedules = async () => {
+        try {
+          const schedulesData = await getSchedules();
+          setSchedules(schedulesData);
+        } catch (err) {
+          console.error('Error refreshing schedules:', err);
+        }
+      };
+      refreshSchedules();
+    }
+  }, [installationDialogOpen]);
 
   const loadData = async () => {
     try {
@@ -525,6 +566,148 @@ function TechnicianDashboard() {
     } catch (err) {
       console.error('Error creating installation:', err);
       alert('Error creating installation: ' + (err.response?.data?.detail || 'Unknown error'));
+    }
+  };
+
+  const handleAddTimeRange = () => {
+    setCustomScheduleForm({
+      ...customScheduleForm,
+      time_ranges: [
+        ...customScheduleForm.time_ranges,
+        { start_time: '00:00', end_time: '23:59', spray_seconds: 20, pause_seconds: 40 },
+      ],
+    });
+  };
+
+  const handleRemoveTimeRange = (index) => {
+    setCustomScheduleForm({
+      ...customScheduleForm,
+      time_ranges: customScheduleForm.time_ranges.filter((_, i) => i !== index),
+    });
+  };
+
+  const handleTimeRangeChange = (index, field, value) => {
+    const newTimeRanges = [...customScheduleForm.time_ranges];
+    if (field === 'spray_seconds' || field === 'pause_seconds') {
+      newTimeRanges[index][field] = parseInt(value) || 0;
+    } else {
+      newTimeRanges[index][field] = value;
+    }
+    setCustomScheduleForm({ ...customScheduleForm, time_ranges: newTimeRanges });
+  };
+
+  const handleAddInterval = () => {
+    setCustomScheduleForm({
+      ...customScheduleForm,
+      intervals: [...customScheduleForm.intervals, { spray_seconds: 20, pause_seconds: 40 }],
+    });
+  };
+
+  const handleRemoveInterval = (index) => {
+    setCustomScheduleForm({
+      ...customScheduleForm,
+      intervals: customScheduleForm.intervals.filter((_, i) => i !== index),
+    });
+  };
+
+  const handleIntervalChange = (index, field, value) => {
+    const newIntervals = [...customScheduleForm.intervals];
+    newIntervals[index][field] = parseInt(value) || 0;
+    setCustomScheduleForm({ ...customScheduleForm, intervals: newIntervals });
+  };
+
+  const handleDayToggle = (day) => {
+    const currentDays = customScheduleForm.days_of_week || [];
+    const newDays = currentDays.includes(day)
+      ? currentDays.filter(d => d !== day)
+      : [...currentDays, day].sort();
+    setCustomScheduleForm({ ...customScheduleForm, days_of_week: newDays });
+  };
+
+  const handleCreateCustomSchedule = async () => {
+    if (!customScheduleForm.name.trim()) {
+      alert('Schedule name is required');
+      return;
+    }
+
+    try {
+      let scheduleData;
+      
+      if (customScheduleForm.scheduleType === 'time_based') {
+        if (customScheduleForm.time_ranges.length === 0) {
+          alert('At least one time range is required');
+          return;
+        }
+        scheduleData = {
+          name: customScheduleForm.name.trim(),
+          type: 'custom',
+          time_ranges: customScheduleForm.time_ranges.map((tr) => ({
+            start_time: tr.start_time,
+            end_time: tr.end_time,
+            spray_seconds: parseInt(tr.spray_seconds) || 0,
+            pause_seconds: parseInt(tr.pause_seconds) || 0,
+          })),
+        };
+        if (customScheduleForm.ml_per_hour) {
+          scheduleData.ml_per_hour = parseFloat(customScheduleForm.ml_per_hour) || null;
+        }
+      } else {
+        if (customScheduleForm.intervals.length === 0) {
+          alert('At least one interval is required');
+          return;
+        }
+        scheduleData = {
+          name: customScheduleForm.name.trim(),
+          type: 'custom',
+          intervals: customScheduleForm.intervals.map((i) => ({
+            spray_seconds: parseInt(i.spray_seconds) || 0,
+            pause_seconds: parseInt(i.pause_seconds) || 0,
+          })),
+          duration_minutes: parseInt(customScheduleForm.duration_minutes) || 60,
+          daily_cycles: parseInt(customScheduleForm.daily_cycles) || 1,
+        };
+        if (customScheduleForm.ml_per_hour) {
+          scheduleData.ml_per_hour = parseFloat(customScheduleForm.ml_per_hour) || null;
+        }
+      }
+
+      // Add days_of_week if not all days selected
+      if (customScheduleForm.days_of_week && customScheduleForm.days_of_week.length < 7) {
+        scheduleData.days_of_week = customScheduleForm.days_of_week;
+      }
+
+      const created = await createSchedule(scheduleData);
+
+      // Refresh schedules and pre-select the newly created one
+      const schedulesData = await getSchedules();
+      setSchedules(schedulesData);
+      setInstallationForm({
+        ...installationForm,
+        schedule_id: created?.id || '',
+      });
+
+      // Reset form
+      setCustomScheduleForm({
+        name: '',
+        type: 'custom',
+        scheduleType: 'time_based',
+        duration_minutes: 120,
+        daily_cycles: 1,
+        ml_per_hour: '',
+        intervals: [{ spray_seconds: 20, pause_seconds: 40 }],
+        time_ranges: [
+          { start_time: '00:00', end_time: '06:00', spray_seconds: 20, pause_seconds: 40 },
+          { start_time: '06:00', end_time: '12:00', spray_seconds: 30, pause_seconds: 30 },
+          { start_time: '12:00', end_time: '15:00', spray_seconds: 50, pause_seconds: 20 },
+          { start_time: '15:00', end_time: '23:55', spray_seconds: 100, pause_seconds: 10 },
+        ],
+        days_of_week: [0, 1, 2, 3, 4, 5, 6],
+      });
+      setCustomScheduleDialogOpen(false);
+      alert('Custom schedule created and selected.');
+    } catch (err) {
+      console.error('Error creating schedule:', err);
+      alert(err.response?.data?.detail || 'Error creating custom schedule');
     }
   };
 
@@ -972,7 +1155,14 @@ function TechnicianDashboard() {
                                 <Button
                                   variant="contained"
                                   startIcon={<Devices />}
-                                  onClick={() => {
+                                  onClick={async () => {
+                                    // Refresh schedules to include any newly created custom schedules
+                                    try {
+                                      const schedulesData = await getSchedules();
+                                      setSchedules(schedulesData);
+                                    } catch (err) {
+                                      console.error('Error refreshing schedules:', err);
+                                    }
                                     setInstallationForm({
                                       location: '',
                                       sku: '',
@@ -982,6 +1172,7 @@ function TechnicianDashboard() {
                                       schedule_id: '',
                                       refill_amount_ml: 0,
                                       last_refill_date: null,
+                                      installation_date: null,
                                     });
                                     setInstallationDialogOpen(true);
                                   }}
@@ -2531,17 +2722,97 @@ function TechnicianDashboard() {
             <InputLabel>Schedule</InputLabel>
             <Select
               value={installationForm.schedule_id || ''}
-              onChange={(e) => setInstallationForm({ ...installationForm, schedule_id: e.target.value })}
+              onChange={(e) => {
+                const scheduleId = e.target.value;
+                const selectedSchedule = schedules.find(s => s.id === scheduleId);
+                setInstallationForm({ 
+                  ...installationForm, 
+                  schedule_id: scheduleId 
+                });
+              }}
               label="Schedule"
+              displayEmpty
             >
-              <MenuItem value="">No Schedule</MenuItem>
+              <MenuItem value="">
+                <em>No Schedule</em>
+              </MenuItem>
               {schedules.map((schedule) => (
                 <MenuItem key={schedule.id} value={schedule.id}>
-                  {schedule.name}
+                  {schedule.name} {schedule.type === 'custom' ? '(Custom)' : schedule.type === 'fixed' ? '(Fixed)' : ''}
                 </MenuItem>
               ))}
             </Select>
+            <Box sx={{ mt: 1 }}>
+              {installationForm.schedule_id && (() => {
+                const selectedSchedule = schedules.find(s => s.id === installationForm.schedule_id);
+                if (selectedSchedule) {
+                  return (
+                    <Typography variant="caption" color="text.secondary">
+                      {selectedSchedule.ml_per_hour ? `ML/Hour: ${selectedSchedule.ml_per_hour} ml/h` : 'Using default calculation'}
+                    </Typography>
+                  );
+                }
+                return null;
+              })()}
+            </Box>
+            <FormHelperText>
+              Need a new custom schedule?{' '}
+              <Button
+                size="small"
+                variant="text"
+                onClick={() => {
+                  setCustomScheduleForm({
+                    name: '',
+                    type: 'custom',
+                    scheduleType: 'time_based',
+                    duration_minutes: 120,
+                    daily_cycles: 1,
+                    ml_per_hour: '',
+                    intervals: [{ spray_seconds: 20, pause_seconds: 40 }],
+                    time_ranges: [
+                      { start_time: '00:00', end_time: '06:00', spray_seconds: 20, pause_seconds: 40 },
+                      { start_time: '06:00', end_time: '12:00', spray_seconds: 30, pause_seconds: 30 },
+                      { start_time: '12:00', end_time: '15:00', spray_seconds: 50, pause_seconds: 20 },
+                      { start_time: '15:00', end_time: '23:55', spray_seconds: 100, pause_seconds: 10 },
+                    ],
+                    days_of_week: [0, 1, 2, 3, 4, 5, 6],
+                  });
+                  setCustomScheduleDialogOpen(true);
+                }}
+                sx={{ textTransform: 'none', ml: -1 }}
+              >
+                Create one here
+              </Button>
+            </FormHelperText>
           </FormControl>
+
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => {
+                setCustomScheduleForm({
+                  name: '',
+                  type: 'custom',
+                  scheduleType: 'time_based',
+                  duration_minutes: 120,
+                  daily_cycles: 1,
+                  ml_per_hour: '',
+                  intervals: [{ spray_seconds: 20, pause_seconds: 40 }],
+                  time_ranges: [
+                    { start_time: '00:00', end_time: '06:00', spray_seconds: 20, pause_seconds: 40 },
+                    { start_time: '06:00', end_time: '12:00', spray_seconds: 30, pause_seconds: 30 },
+                    { start_time: '12:00', end_time: '15:00', spray_seconds: 50, pause_seconds: 20 },
+                    { start_time: '15:00', end_time: '23:55', spray_seconds: 100, pause_seconds: 10 },
+                  ],
+                  days_of_week: [0, 1, 2, 3, 4, 5, 6],
+                });
+                setCustomScheduleDialogOpen(true);
+              }}
+            >
+              Create Custom Schedule
+            </Button>
+          </Box>
 
           <TextField
             fullWidth
@@ -2585,6 +2856,233 @@ function TechnicianDashboard() {
           >
             Create Installation
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Custom Schedule Dialog */}
+      <Dialog open={customScheduleDialogOpen} onClose={() => setCustomScheduleDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Create Custom Schedule</DialogTitle>
+        <DialogContent>
+          <TextField
+            fullWidth
+            label="Schedule Name"
+            value={customScheduleForm.name}
+            onChange={(e) => setCustomScheduleForm({ ...customScheduleForm, name: e.target.value })}
+            margin="normal"
+            required
+          />
+
+          <Box sx={{ mt: 3, mb: 2 }}>
+            <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 500 }}>
+              Schedule Type
+            </Typography>
+            <ToggleButtonGroup
+              value={customScheduleForm.scheduleType}
+              exclusive
+              onChange={(e, newType) => {
+                if (newType) {
+                  setCustomScheduleForm({ ...customScheduleForm, scheduleType: newType });
+                }
+              }}
+              fullWidth
+            >
+              <ToggleButton value="time_based">Time-Based Schedule</ToggleButton>
+              <ToggleButton value="interval_based">Interval-Based Schedule</ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+
+          <Box sx={{ mt: 2, mb: 2 }}>
+            <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 500 }}>
+              Days of Week
+            </Typography>
+            <FormGroup row>
+              {[
+                { value: 0, label: 'Mon' },
+                { value: 1, label: 'Tue' },
+                { value: 2, label: 'Wed' },
+                { value: 3, label: 'Thu' },
+                { value: 4, label: 'Fri' },
+                { value: 5, label: 'Sat' },
+                { value: 6, label: 'Sun' },
+              ].map((day) => (
+                <FormControlLabel
+                  key={day.value}
+                  control={
+                    <Checkbox
+                      checked={(customScheduleForm.days_of_week || []).includes(day.value)}
+                      onChange={() => handleDayToggle(day.value)}
+                    />
+                  }
+                  label={day.label}
+                />
+              ))}
+            </FormGroup>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+              Select days when this schedule should run. Leave all selected for daily operation.
+            </Typography>
+          </Box>
+
+          <Divider sx={{ my: 3 }} />
+
+          {customScheduleForm.scheduleType === 'time_based' ? (
+            <>
+              <Typography variant="h6" sx={{ mt: 2, mb: 2 }}>
+                Time Ranges
+              </Typography>
+              {(customScheduleForm.time_ranges || []).map((timeRange, index) => (
+                <Card key={index} sx={{ mb: 2 }}>
+                  <CardContent>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+                      <Typography variant="subtitle2">Time Range {index + 1}</Typography>
+                      {customScheduleForm.time_ranges.length > 1 && (
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => handleRemoveTimeRange(index)}
+                        >
+                          <Delete />
+                        </IconButton>
+                      )}
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+                      <TextField
+                        label="Start Time"
+                        type="time"
+                        value={timeRange.start_time}
+                        onChange={(e) =>
+                          handleTimeRangeChange(index, 'start_time', e.target.value)
+                        }
+                        margin="normal"
+                        InputLabelProps={{ shrink: true }}
+                        required
+                      />
+                      <TextField
+                        label="End Time"
+                        type="time"
+                        value={timeRange.end_time}
+                        onChange={(e) =>
+                          handleTimeRangeChange(index, 'end_time', e.target.value)
+                        }
+                        margin="normal"
+                        InputLabelProps={{ shrink: true }}
+                        required
+                      />
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                      <TextField
+                        label="Spray (seconds)"
+                        type="number"
+                        value={timeRange.spray_seconds}
+                        onChange={(e) =>
+                          handleTimeRangeChange(index, 'spray_seconds', e.target.value)
+                        }
+                        margin="normal"
+                        required
+                      />
+                      <TextField
+                        label="Pause (seconds)"
+                        type="number"
+                        value={timeRange.pause_seconds}
+                        onChange={(e) =>
+                          handleTimeRangeChange(index, 'pause_seconds', e.target.value)
+                        }
+                        margin="normal"
+                        required
+                      />
+                    </Box>
+                  </CardContent>
+                </Card>
+              ))}
+
+              <Button
+                variant="outlined"
+                startIcon={<Add />}
+                onClick={handleAddTimeRange}
+                sx={{ mt: 2 }}
+              >
+                Add Time Range
+              </Button>
+            </>
+          ) : (
+            <>
+              <Box sx={{ display: 'flex', gap: 2, mt: 2 }}>
+                <TextField
+                  label="Duration (minutes)"
+                  type="number"
+                  value={customScheduleForm.duration_minutes}
+                  onChange={(e) => setCustomScheduleForm({ ...customScheduleForm, duration_minutes: e.target.value })}
+                  margin="normal"
+                  required
+                />
+                <TextField
+                  label="Daily Cycles"
+                  type="number"
+                  value={customScheduleForm.daily_cycles}
+                  onChange={(e) => setCustomScheduleForm({ ...customScheduleForm, daily_cycles: e.target.value })}
+                  margin="normal"
+                  required
+                />
+              </Box>
+
+              <Typography variant="h6" sx={{ mt: 3, mb: 2 }}>
+                Intervals
+              </Typography>
+
+              {(customScheduleForm.intervals || []).map((interval, index) => (
+                <Card key={index} sx={{ mb: 2 }}>
+                  <CardContent>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+                      <Typography variant="subtitle2">Interval {index + 1}</Typography>
+                      {customScheduleForm.intervals.length > 1 && (
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => handleRemoveInterval(index)}
+                        >
+                          <Delete />
+                        </IconButton>
+                      )}
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                      <TextField
+                        label="Spray (seconds)"
+                        type="number"
+                        value={interval.spray_seconds}
+                        onChange={(e) =>
+                          handleIntervalChange(index, 'spray_seconds', e.target.value)
+                        }
+                        margin="normal"
+                        required
+                      />
+                      <TextField
+                        label="Pause (seconds)"
+                        type="number"
+                        value={interval.pause_seconds}
+                        onChange={(e) =>
+                          handleIntervalChange(index, 'pause_seconds', e.target.value)
+                        }
+                        margin="normal"
+                        required
+                      />
+                    </Box>
+                  </CardContent>
+                </Card>
+              ))}
+
+              <Button
+                variant="outlined"
+                startIcon={<Add />}
+                onClick={handleAddInterval}
+                sx={{ mt: 2 }}
+              >
+                Add Interval
+              </Button>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCustomScheduleDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleCreateCustomSchedule}>Create & Select</Button>
         </DialogActions>
       </Dialog>
       </Box>

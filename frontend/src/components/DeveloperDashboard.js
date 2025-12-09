@@ -20,6 +20,9 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Divider,
+  Checkbox,
+  FormControlLabel,
+  FormGroup,
 } from '@mui/material';
 import { Add, Delete, Edit } from '@mui/icons-material';
 import { AuthContext } from '../context/AuthContext';
@@ -47,6 +50,7 @@ function DeveloperDashboard() {
       { start_time: '12:00', end_time: '15:00', spray_seconds: 50, pause_seconds: 20 },
       { start_time: '15:00', end_time: '23:55', spray_seconds: 100, pause_seconds: 10 },
     ],
+    days_of_week: [0, 1, 2, 3, 4, 5, 6],
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -89,6 +93,7 @@ function DeveloperDashboard() {
           { start_time: '12:00', end_time: '15:00', spray_seconds: 50, pause_seconds: 20 },
           { start_time: '15:00', end_time: '23:55', spray_seconds: 100, pause_seconds: 10 },
         ],
+        days_of_week: schedule.days_of_week || [0, 1, 2, 3, 4, 5, 6],
       });
     } else {
       setEditingSchedule(null);
@@ -106,6 +111,7 @@ function DeveloperDashboard() {
           { start_time: '12:00', end_time: '15:00', spray_seconds: 50, pause_seconds: 20 },
           { start_time: '15:00', end_time: '23:55', spray_seconds: 100, pause_seconds: 10 },
         ],
+        days_of_week: [0, 1, 2, 3, 4, 5, 6],
       });
     }
     setError('');
@@ -136,6 +142,14 @@ function DeveloperDashboard() {
     const newIntervals = [...formData.intervals];
     newIntervals[index][field] = parseInt(value) || 0;
     setFormData({ ...formData, intervals: newIntervals });
+  };
+
+  const handleDayToggle = (day) => {
+    const currentDays = formData.days_of_week || [];
+    const newDays = currentDays.includes(day)
+      ? currentDays.filter(d => d !== day)
+      : [...currentDays, day].sort();
+    setFormData({ ...formData, days_of_week: newDays });
   };
 
   const handleAddTimeRange = () => {
@@ -214,6 +228,11 @@ function DeveloperDashboard() {
         }
       }
 
+      // Add days_of_week only if not all 7 days are selected
+      if (formData.days_of_week && formData.days_of_week.length < 7) {
+        scheduleData.days_of_week = formData.days_of_week;
+      }
+
       if (editingSchedule) {
         await updateSchedule(editingSchedule.id, scheduleData);
         setSuccess('Schedule updated successfully!');
@@ -276,6 +295,9 @@ function DeveloperDashboard() {
     return dispensers.filter((d) => d.current_schedule_id === scheduleId);
   };
 
+  // Show only custom schedules to developers; fixed schedules are hidden
+  const visibleSchedules = schedules.filter((s) => s.type !== 'fixed');
+
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
       <Sidebar user={user} logout={logout} role="developer" />
@@ -313,7 +335,7 @@ function DeveloperDashboard() {
           </Box>
         ) : (
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: 3 }}>
-            {schedules.map((schedule) => {
+            {visibleSchedules.map((schedule) => {
               const cycleUsage = calculateCycleUsage(schedule);
               const dailyUsage = schedule.time_ranges 
                 ? cycleUsage 
@@ -417,17 +439,6 @@ function DeveloperDashboard() {
             required
           />
 
-          <TextField
-            fullWidth
-            label="ML Per Hour (Optional)"
-            type="number"
-            value={formData.ml_per_hour}
-            onChange={(e) => setFormData({ ...formData, ml_per_hour: e.target.value })}
-            margin="normal"
-            helperText="If specified, usage will be calculated as: Total Run Time (hours) × ML Per Hour. Leave empty to use default 0.1ml per second."
-            inputProps={{ min: 0, step: 0.1 }}
-          />
-
           <Box sx={{ mt: 3, mb: 2 }}>
             <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 500 }}>
               Schedule Type
@@ -445,6 +456,37 @@ function DeveloperDashboard() {
               <ToggleButton value="time_based">Time-Based Schedule</ToggleButton>
               <ToggleButton value="interval_based">Interval-Based Schedule</ToggleButton>
             </ToggleButtonGroup>
+          </Box>
+
+          <Box sx={{ mt: 2, mb: 2 }}>
+            <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 500 }}>
+              Days of Week
+            </Typography>
+            <FormGroup row>
+              {[
+                { value: 0, label: 'Mon' },
+                { value: 1, label: 'Tue' },
+                { value: 2, label: 'Wed' },
+                { value: 3, label: 'Thu' },
+                { value: 4, label: 'Fri' },
+                { value: 5, label: 'Sat' },
+                { value: 6, label: 'Sun' },
+              ].map((day) => (
+                <FormControlLabel
+                  key={day.value}
+                  control={
+                    <Checkbox
+                      checked={(formData.days_of_week || []).includes(day.value)}
+                      onChange={() => handleDayToggle(day.value)}
+                    />
+                  }
+                  label={day.label}
+                />
+              ))}
+            </FormGroup>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+              Select days when this schedule should run. Leave all selected for daily operation.
+            </Typography>
           </Box>
 
           <Divider sx={{ my: 3 }} />
