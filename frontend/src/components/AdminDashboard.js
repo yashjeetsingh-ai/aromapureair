@@ -33,6 +33,10 @@ import {
   Checkbox,
   ListItemText,
   OutlinedInput,
+  AppBar,
+  Toolbar,
+  useTheme,
+  useMediaQuery,
 } from '@mui/material';
 import { 
   Refresh, 
@@ -56,10 +60,12 @@ import {
   Cancel,
   EventNote,
   Close,
+  Menu,
 } from '@mui/icons-material';
 import { useLocation } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import Sidebar from './Sidebar';
+import ResponsiveTable from './ResponsiveTable';
 import TechnicianView from './TechnicianView';
 import {
   getDispensers,
@@ -88,8 +94,15 @@ import {
 function AdminDashboard() {
   const { user, logout } = useContext(AuthContext);
   const location = useLocation();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const [mobileOpen, setMobileOpen] = useState(false);
   // Dashboard view when no tab is specified, Machines tab = 0, Clients = 1, Users = 2, Refill Logs = 3
   const [activeTab, setActiveTab] = useState(location?.state?.tab !== undefined ? location.state.tab : null);
+  
+  const handleDrawerToggle = () => {
+    setMobileOpen(!mobileOpen);
+  };
   const [dispensers, setDispensers] = useState([]);
   const [clients, setClients] = useState([]);
   const [users, setUsers] = useState([]);
@@ -1028,16 +1041,46 @@ function AdminDashboard() {
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
-      <Sidebar user={user} logout={logout} role="admin" />
+      <Sidebar 
+        user={user} 
+        logout={logout} 
+        role="admin" 
+        mobileOpen={mobileOpen}
+        onMobileClose={handleDrawerToggle}
+      />
       <Box
         component="main"
         sx={{
           flexGrow: 1,
-          p: 4,
-          width: { sm: `calc(100% - 260px)` },
+          p: { xs: 2, sm: 4 },
+          width: { xs: '100%', md: `calc(100% - 260px)` },
+          mt: { xs: 7, md: 0 },
         }}
       >
-        <Container maxWidth="xl" sx={{ mt: 0, mb: 4 }}>
+        {/* Mobile App Bar */}
+        <AppBar
+          position="fixed"
+          sx={{
+            display: { xs: 'flex', md: 'none' },
+            zIndex: (theme) => theme.zIndex.drawer + 1,
+          }}
+        >
+          <Toolbar>
+            <IconButton
+              color="inherit"
+              edge="start"
+              onClick={handleDrawerToggle}
+              sx={{ mr: 2 }}
+            >
+              <Menu />
+            </IconButton>
+            <Typography variant="h6" noWrap component="div">
+              Admin Dashboard
+            </Typography>
+          </Toolbar>
+        </AppBar>
+        
+        <Container maxWidth="xl" sx={{ mt: { xs: 0, md: 0 }, mb: 4 }}>
 
         {/* Technician View Selector */}
         <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
@@ -1548,97 +1591,90 @@ function AdminDashboard() {
                 </Box>
 
                 {/* Simple Machine Table */}
-                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-                  <Table>
-                    <TableHead>
-                      <TableRow sx={{ bgcolor: 'grey.50' }}>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>SKU</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Code</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Capacity (ml)</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>ML Per Hour Usage</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Actions</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {(() => {
-                        // Filter to show only SKU templates (machines without client_id)
-                        // SKU templates are the base machine definitions, not instances assigned to clients
-                        const skuTemplates = dispensers.filter(d => !d.client_id);
-                        
-                        if (skuTemplates.length === 0) {
-                          return (
-                            <TableRow>
-                              <TableCell colSpan={5} align="center" sx={{ py: 6 }}>
-                                <Devices sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
-                                <Typography color="text.secondary" variant="body1">
-                                  No SKU templates found. Click "Add Machine" to create one.
-                                </Typography>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        }
-                        
-                        return skuTemplates.map((dispenser, index) => (
-                          <TableRow 
-                            key={dispenser.id} 
-                            hover
-                            sx={{ 
-                              '&:hover': { bgcolor: 'action.hover' },
-                              bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
-                            }}
+                {(() => {
+                  // Filter to show only SKU templates (machines without client_id)
+                  const skuTemplates = dispensers.filter(d => !d.client_id);
+                  
+                  if (skuTemplates.length === 0) {
+                    return (
+                      <Box sx={{ py: 6, textAlign: 'center' }}>
+                        <Devices sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
+                        <Typography color="text.secondary" variant="body1">
+                          No SKU templates found. Click "Add Machine" to create one.
+                        </Typography>
+                      </Box>
+                    );
+                  }
+                  
+                  return (
+                    <ResponsiveTable
+                      columns={[
+                        { 
+                          id: 'sku', 
+                          label: 'SKU',
+                          render: (value) => (
+                            <Chip
+                              label={value || 'N/A'}
+                              size="small"
+                              variant="outlined"
+                              color="primary"
+                              sx={{ fontWeight: 500 }}
+                            />
+                          ),
+                        },
+                        { 
+                          id: 'unique_code', 
+                          label: 'Code',
+                          render: (value) => (
+                            <Typography variant="body2" fontWeight={500}>
+                              {value || 'N/A'}
+                            </Typography>
+                          ),
+                          bold: true,
+                        },
+                        { 
+                          id: 'refill_capacity_ml', 
+                          label: 'Capacity (ml)',
+                          render: (value) => (
+                            <Typography variant="body2" fontWeight={500}>
+                              {value} ml
+                            </Typography>
+                          ),
+                        },
+                        { 
+                          id: 'ml_per_hour', 
+                          label: 'ML Per Hour Usage',
+                          render: (value) => (
+                            <Typography variant="body2" fontWeight={500}>
+                              {value ? `${value} ml/hr` : 'N/A'}
+                            </Typography>
+                          ),
+                        },
+                      ]}
+                      data={skuTemplates}
+                      renderActions={(dispenser) => (
+                        <Box sx={{ display: 'flex', gap: 0.5 }}>
+                          <IconButton
+                            size="small"
+                            color="primary"
+                            onClick={() => handleOpenMachineDialog(dispenser)}
+                            sx={{ '&:hover': { bgcolor: 'primary.light', color: 'white' } }}
                           >
-                            <TableCell sx={{ py: 2 }}>
-                              <Chip
-                                label={dispenser.sku || 'N/A'}
-                                size="small"
-                                variant="outlined"
-                                color="primary"
-                                sx={{ fontWeight: 500 }}
-                              />
-                            </TableCell>
-                            <TableCell sx={{ py: 2 }}>
-                              <Typography variant="body2" fontWeight={500}>
-                                {dispenser.unique_code || 'N/A'}
-                              </Typography>
-                            </TableCell>
-                            <TableCell sx={{ py: 2 }}>
-                              <Typography variant="body2" fontWeight={500}>
-                                {dispenser.refill_capacity_ml} ml
-                              </Typography>
-                            </TableCell>
-                            <TableCell sx={{ py: 2 }}>
-                              <Typography variant="body2" fontWeight={500}>
-                                {dispenser.ml_per_hour
-                                  ? `${dispenser.ml_per_hour} ml/hr`
-                                  : 'N/A'}
-                              </Typography>
-                            </TableCell>
-                            <TableCell sx={{ py: 2 }}>
-                              <Box sx={{ display: 'flex', gap: 0.5 }}>
-                                <IconButton
-                                  size="small"
-                                  color="primary"
-                                  onClick={() => handleOpenMachineDialog(dispenser)}
-                                  sx={{ '&:hover': { bgcolor: 'primary.light', color: 'white' } }}
-                                >
-                                  <Edit fontSize="small" />
-                                </IconButton>
-                                <IconButton
-                                  size="small"
-                                  color="error"
-                                  onClick={() => handleDeleteMachine(dispenser.id, dispenser.name)}
-                                  sx={{ '&:hover': { bgcolor: 'error.light', color: 'white' } }}
-                                >
-                                  <Delete fontSize="small" />
-                                </IconButton>
-                              </Box>
-                            </TableCell>
-                          </TableRow>
-                        ));
-                      })()}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+                            <Edit fontSize="small" />
+                          </IconButton>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => handleDeleteMachine(dispenser.id, dispenser.name)}
+                            sx={{ '&:hover': { bgcolor: 'error.light', color: 'white' } }}
+                          >
+                            <Delete fontSize="small" />
+                          </IconButton>
+                        </Box>
+                      )}
+                    />
+                  );
+                })()}
               </Box>
             )}
 
@@ -3258,7 +3294,13 @@ function AdminDashboard() {
       </Container>
 
       {/* Client Dialog */}
-      <Dialog open={clientDialogOpen} onClose={handleCloseClientDialog} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={clientDialogOpen} 
+        onClose={handleCloseClientDialog} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>{editingClient ? 'Edit Client' : 'Add New Client'}</DialogTitle>
         <DialogContent>
           <TextField
@@ -3310,7 +3352,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* Machine Dialog */}
-      <Dialog open={machineDialogOpen} onClose={handleCloseMachineDialog} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={machineDialogOpen} 
+        onClose={handleCloseMachineDialog} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>
           {editingMachine ? 'Edit Machine SKU' : 'Add New Machine SKU'}
         </DialogTitle>
@@ -3373,7 +3421,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* User Dialog */}
-      <Dialog open={userDialogOpen} onClose={handleCloseUserDialog} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={userDialogOpen} 
+        onClose={handleCloseUserDialog} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>{editingUser ? 'Edit User' : 'Add New User'}</DialogTitle>
         <DialogContent>
           <TextField
@@ -3418,7 +3472,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* Installation Dialog */}
-      <Dialog open={installationDialogOpen} onClose={handleCloseInstallationDialog} maxWidth="md" fullWidth>
+      <Dialog 
+        open={installationDialogOpen} 
+        onClose={handleCloseInstallationDialog} 
+        maxWidth="md" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>
           {editingInstallation ? 'Edit Installation' : 'Create New Installation'}
         </DialogTitle>
@@ -3831,7 +3891,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* Add Machine to Client Dialog - Simple Form */}
-      <Dialog open={addMachineToClientDialogOpen} onClose={handleCloseAddMachineToClientDialog} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={addMachineToClientDialogOpen} 
+        onClose={handleCloseAddMachineToClientDialog} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>Add Machine Asset to Client</DialogTitle>
         <DialogContent>
           <FormControl fullWidth margin="normal" required>
@@ -3916,7 +3982,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* View Client Details Dialog */}
-      <Dialog open={viewClientDialogOpen} onClose={() => setViewClientDialogOpen(false)} maxWidth="md" fullWidth>
+      <Dialog 
+        open={viewClientDialogOpen} 
+        onClose={() => setViewClientDialogOpen(false)} 
+        maxWidth="md" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Business sx={{ color: 'primary.main' }} />
@@ -4190,7 +4262,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* Assign Technician Dialog */}
-      <Dialog open={assignTechnicianDialogOpen} onClose={() => setAssignTechnicianDialogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={assignTechnicianDialogOpen} 
+        onClose={() => setAssignTechnicianDialogOpen(false)} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <PersonAdd sx={{ color: 'primary.main' }} />
@@ -4433,7 +4511,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* Assign Task Dialog */}
-      <Dialog open={assignTaskDialogOpen} onClose={() => setAssignTaskDialogOpen(false)} maxWidth="md" fullWidth>
+      <Dialog 
+        open={assignTaskDialogOpen} 
+        onClose={() => setAssignTaskDialogOpen(false)} 
+        maxWidth="md" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <PlaylistAdd sx={{ color: 'primary.main' }} />
@@ -4805,7 +4889,13 @@ function AdminDashboard() {
       </Dialog>
 
       {/* Edit Task Dialog */}
-      <Dialog open={!!editingTask} onClose={() => setEditingTask(null)} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={!!editingTask} 
+        onClose={() => setEditingTask(null)} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>Edit Task</DialogTitle>
         <DialogContent>
           <FormControl fullWidth margin="normal">

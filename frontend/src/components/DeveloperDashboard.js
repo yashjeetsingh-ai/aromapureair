@@ -23,15 +23,24 @@ import {
   Checkbox,
   FormControlLabel,
   FormGroup,
+  useTheme,
+  useMediaQuery,
 } from '@mui/material';
-import { Add, Delete, Edit } from '@mui/icons-material';
+import { Add, Delete, Edit, Menu } from '@mui/icons-material';
 import { AuthContext } from '../context/AuthContext';
 import { getSchedules, createSchedule, updateSchedule, deleteSchedule, getDispensers } from '../services/api';
 import Sidebar from './Sidebar';
 
 function DeveloperDashboard() {
   const { user, logout } = useContext(AuthContext);
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [schedules, setSchedules] = useState([]);
+  
+  const handleDrawerToggle = () => {
+    setMobileOpen(!mobileOpen);
+  };
   const [dispensers, setDispensers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -300,16 +309,46 @@ function DeveloperDashboard() {
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
-      <Sidebar user={user} logout={logout} role="developer" />
+      <Sidebar 
+        user={user} 
+        logout={logout} 
+        role="developer" 
+        mobileOpen={mobileOpen}
+        onMobileClose={handleDrawerToggle}
+      />
       <Box
         component="main"
         sx={{
           flexGrow: 1,
-          p: 3,
-          width: { sm: `calc(100% - 260px)` },
+          p: { xs: 2, sm: 3 },
+          width: { xs: '100%', md: `calc(100% - 260px)` },
+          mt: { xs: 7, md: 0 },
         }}
       >
-        <Container maxWidth="xl" sx={{ mt: 2, mb: 4 }}>
+        {/* Mobile App Bar */}
+        <AppBar
+          position="fixed"
+          sx={{
+            display: { xs: 'flex', md: 'none' },
+            zIndex: (theme) => theme.zIndex.drawer + 1,
+          }}
+        >
+          <Toolbar>
+            <IconButton
+              color="inherit"
+              edge="start"
+              onClick={handleDrawerToggle}
+              sx={{ mr: 2 }}
+            >
+              <Menu />
+            </IconButton>
+            <Typography variant="h6" noWrap component="div">
+              Developer Dashboard
+            </Typography>
+          </Toolbar>
+        </AppBar>
+        
+        <Container maxWidth="xl" sx={{ mt: { xs: 0, md: 2 }, mb: 4 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
           <Typography variant="h4" component="h1" sx={{ fontWeight: 600 }}>
             Schedule Management
@@ -334,7 +373,15 @@ function DeveloperDashboard() {
             <CircularProgress />
           </Box>
         ) : (
-          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: 3 }}>
+          <Box sx={{ 
+            display: 'grid', 
+            gridTemplateColumns: { 
+              xs: '1fr', 
+              sm: 'repeat(auto-fill, minmax(300px, 1fr))',
+              md: 'repeat(auto-fill, minmax(400px, 1fr))' 
+            }, 
+            gap: 3 
+          }}>
             {visibleSchedules.map((schedule) => {
               const cycleUsage = calculateCycleUsage(schedule);
               const dailyUsage = schedule.time_ranges 
@@ -419,7 +466,13 @@ function DeveloperDashboard() {
         )}
       </Container>
 
-      <Dialog open={dialogOpen} onClose={handleCloseDialog} maxWidth="md" fullWidth>
+      <Dialog 
+        open={dialogOpen} 
+        onClose={handleCloseDialog} 
+        maxWidth="md" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>
           {editingSchedule ? 'Edit Schedule' : 'Create New Schedule'}
         </DialogTitle>

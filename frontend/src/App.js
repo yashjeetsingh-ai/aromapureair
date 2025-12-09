@@ -10,6 +10,15 @@ import DeveloperDashboard from './components/DeveloperDashboard';
 import { AuthContext } from './context/AuthContext';
 
 const theme = createTheme({
+  breakpoints: {
+    values: {
+      xs: 0,
+      sm: 600,
+      md: 900,
+      lg: 1200,
+      xl: 1536,
+    },
+  },
   palette: {
     primary: {
       main: '#1976d2', // Professional Blue
@@ -159,7 +168,16 @@ function App() {
     // Check if user is stored in localStorage
     const storedUser = localStorage.getItem('user');
     if (storedUser) {
-      setUser(JSON.parse(storedUser));
+      try {
+        const parsed = JSON.parse(storedUser);
+        if (parsed?.token) {
+          setUser(parsed);
+        } else {
+          localStorage.removeItem('user');
+        }
+      } catch {
+        localStorage.removeItem('user');
+      }
     }
   }, []);
 

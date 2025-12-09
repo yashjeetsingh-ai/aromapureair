@@ -39,6 +39,10 @@ import {
   Checkbox,
   FormControlLabel,
   FormGroup,
+  AppBar,
+  Toolbar,
+  useTheme,
+  useMediaQuery,
 } from '@mui/material';
 import { 
   Refresh, 
@@ -59,6 +63,7 @@ import {
   ArrowBack,
   Add,
   Delete,
+  Menu,
 } from '@mui/icons-material';
 import { AuthContext } from '../context/AuthContext';
 import { 
@@ -79,12 +84,20 @@ import {
   assignSchedule,
 } from '../services/api';
 import Sidebar from './Sidebar';
+import ResponsiveTable from './ResponsiveTable';
 import { useLocation } from 'react-router-dom';
 
 function TechnicianDashboard() {
   const { user, logout } = useContext(AuthContext);
   const location = useLocation();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(location?.state?.tab !== undefined ? location.state.tab : null);
+  
+  const handleDrawerToggle = () => {
+    setMobileOpen(!mobileOpen);
+  };
   const [dispensers, setDispensers] = useState([]);
   const [clients, setClients] = useState([]);
   const [schedules, setSchedules] = useState([]);
@@ -930,16 +943,46 @@ function TechnicianDashboard() {
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
-      <Sidebar user={user} logout={logout} role="technician" />
+      <Sidebar 
+        user={user} 
+        logout={logout} 
+        role="technician" 
+        mobileOpen={mobileOpen}
+        onMobileClose={handleDrawerToggle}
+      />
       <Box
         component="main"
         sx={{
           flexGrow: 1,
-          p: 3,
-          width: { sm: `calc(100% - 260px)` },
+          p: { xs: 2, sm: 3 },
+          width: { xs: '100%', md: `calc(100% - 260px)` },
+          mt: { xs: 7, md: 0 },
         }}
       >
-        <Container maxWidth="xl" sx={{ mt: 2, mb: 4 }}>
+        {/* Mobile App Bar */}
+        <AppBar
+          position="fixed"
+          sx={{
+            display: { xs: 'flex', md: 'none' },
+            zIndex: (theme) => theme.zIndex.drawer + 1,
+          }}
+        >
+          <Toolbar>
+            <IconButton
+              color="inherit"
+              edge="start"
+              onClick={handleDrawerToggle}
+              sx={{ mr: 2 }}
+            >
+              <Menu />
+            </IconButton>
+            <Typography variant="h6" noWrap component="div">
+              Technician Dashboard
+            </Typography>
+          </Toolbar>
+        </AppBar>
+        
+        <Container maxWidth="xl" sx={{ mt: { xs: 0, md: 2 }, mb: 4 }}>
           {loading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
               <CircularProgress />
@@ -1188,76 +1231,73 @@ function TechnicianDashboard() {
                                 <Typography color="text.secondary">No installed machines found</Typography>
                               </Box>
                             ) : (
-                              <TableContainer>
-                                <Table>
-                                  <TableHead>
-                                    <TableRow sx={{ bgcolor: 'grey.50' }}>
-                                      <TableCell sx={{ fontWeight: 600 }}>Machine Code</TableCell>
-                                      <TableCell sx={{ fontWeight: 600 }}>SKU</TableCell>
-                                      <TableCell sx={{ fontWeight: 600 }}>Location</TableCell>
-                                      <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
-                                      <TableCell sx={{ fontWeight: 600 }}>Capacity (ml)</TableCell>
-                                      <TableCell sx={{ fontWeight: 600 }}>Current Level (ml)</TableCell>
-                                      <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
-                                    </TableRow>
-                                  </TableHead>
-                                  <TableBody>
-                                    {clientMachines.map((machine) => (
-                                      <TableRow key={machine.id} hover>
-                                        <TableCell>
-                                          <Typography variant="body2" fontWeight={500}>
-                                            {machine.unique_code || '-'}
-                                          </Typography>
-                                        </TableCell>
-                                        <TableCell>
-                                          <Chip label={machine.sku || 'N/A'} size="small" variant="outlined" />
-                                        </TableCell>
-                                        <TableCell>{machine.location || '-'}</TableCell>
-                                        <TableCell>
-                                          <Chip
-                                            label={machine.status === 'installed' ? 'Installed' : machine.status === 'assigned' ? 'Assigned' : machine.status || 'N/A'}
-                                            size="small"
-                                            color={machine.status === 'installed' ? 'success' : machine.status === 'assigned' ? 'info' : 'default'}
-                                          />
-                                        </TableCell>
-                                        <TableCell>{machine.refill_capacity_ml || '-'}</TableCell>
-                                        <TableCell>{machine.current_level_ml || '-'}</TableCell>
-                                        <TableCell>
-                                          <Box sx={{ display: 'flex', gap: 1 }}>
-                                            <IconButton
-                                              size="small"
-                                              onClick={() => {
-                                                setViewingDispenser(machine);
-                                                setEditingDispenser(null);
-                                              }}
-                                            >
-                                              <Visibility fontSize="small" />
-                                            </IconButton>
-                                            <IconButton
-                                              size="small"
-                                              color="primary"
-                                              onClick={() => {
-                                                setEditingDispenser(machine);
-                                                setViewingDispenser(null);
-                                                setDispenserForm({
-                                                  name: machine.name || '',
-                                                  sku: machine.sku || '',
-                                                  location: machine.location || '',
-                                                  refill_capacity_ml: machine.refill_capacity_ml || 500,
-                                                  ml_per_hour: machine.ml_per_hour || 2.0,
-                                                  unique_code: machine.unique_code || '',
-                                                });
-                                              }}
-                                            >
-                                              <Edit fontSize="small" />
-                                            </IconButton>
-                                          </Box>
-                                        </TableCell>
-                                      </TableRow>
-                                    ))}
-                                  </TableBody>
-                                </Table>
-                              </TableContainer>
+                              <ResponsiveTable
+                                columns={[
+                                  { 
+                                    id: 'unique_code', 
+                                    label: 'Machine Code',
+                                    render: (value) => (
+                                      <Typography variant="body2" fontWeight={500}>
+                                        {value || '-'}
+                                      </Typography>
+                                    ),
+                                    bold: true,
+                                  },
+                                  { 
+                                    id: 'sku', 
+                                    label: 'SKU',
+                                    render: (value) => (
+                                      <Chip label={value || 'N/A'} size="small" variant="outlined" />
+                                    ),
+                                  },
+                                  { id: 'location', label: 'Location' },
+                                  { 
+                                    id: 'status', 
+                                    label: 'Status',
+                                    render: (value) => (
+                                      <Chip
+                                        label={value === 'installed' ? 'Installed' : value === 'assigned' ? 'Assigned' : value || 'N/A'}
+                                        size="small"
+                                        color={value === 'installed' ? 'success' : value === 'assigned' ? 'info' : 'default'}
+                                      />
+                                    ),
+                                  },
+                                  { id: 'refill_capacity_ml', label: 'Capacity (ml)' },
+                                  { id: 'current_level_ml', label: 'Current Level (ml)' },
+                                ]}
+                                data={clientMachines}
+                                renderActions={(machine) => (
+                                  <>
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => {
+                                        setViewingDispenser(machine);
+                                        setEditingDispenser(null);
+                                      }}
+                                    >
+                                      <Visibility fontSize="small" />
+                                    </IconButton>
+                                    <IconButton
+                                      size="small"
+                                      color="primary"
+                                      onClick={() => {
+                                        setEditingDispenser(machine);
+                                        setViewingDispenser(null);
+                                        setDispenserForm({
+                                          name: machine.name || '',
+                                          sku: machine.sku || '',
+                                          location: machine.location || '',
+                                          refill_capacity_ml: machine.refill_capacity_ml || 500,
+                                          ml_per_hour: machine.ml_per_hour || 2.0,
+                                          unique_code: machine.unique_code || '',
+                                        });
+                                      }}
+                                    >
+                                      <Edit fontSize="small" />
+                                    </IconButton>
+                                  </>
+                                )}
+                              />
                             )}
                           </Box>
                         );
@@ -1455,157 +1495,171 @@ function TechnicianDashboard() {
                           </Typography>
           </Box>
         ) : (
-                        <TableContainer>
-                          <Table>
-                            <TableHead>
-                              <TableRow sx={{ bgcolor: 'grey.50' }}>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Client</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Location</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Machine</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Task Type</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Assigned Date</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Visit Date</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Status</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Action</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {pendingAssignments.map((assignment, index) => {
+                        <ResponsiveTable
+                          columns={[
+                            { 
+                              id: 'client', 
+                              label: 'Client',
+                              render: (_, assignment) => {
                                 const dispenser = getDispenserDetails(assignment.dispenser_id);
                                 const installationClientId = assignment.task_type === 'installation' 
                                   ? getClientIdFromInstallationTask(assignment) 
                                   : null;
                                 const clientId = installationClientId || dispenser?.client_id;
+                                return (
+                                  <Typography variant="body2" fontWeight={500}>
+                                    {getClientName(clientId)}
+                                  </Typography>
+                                );
+                              },
+                              bold: true,
+                            },
+                            { 
+                              id: 'location', 
+                              label: 'Location',
+                              render: (_, assignment) => {
+                                const dispenser = getDispenserDetails(assignment.dispenser_id);
                                 const isInstallation = assignment.task_type === 'installation';
                                 return (
-                                  <TableRow 
-                                    key={assignment.id}
-                                    hover
-                                    sx={{ bgcolor: index % 2 === 0 ? 'white' : 'grey.50' }}
-                                  >
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      <Typography variant="body2" fontWeight={500}>
-                                        {getClientName(clientId)}
-                                      </Typography>
-                                    </TableCell>
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                        {!isInstallation && <LocationOn fontSize="small" color="action" />}
-                                        <Typography variant="body2">
-                                          {isInstallation ? 'Installation Task' : (dispenser?.location || '-')}
-                                        </Typography>
-                                      </Box>
-                                    </TableCell>
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      <Chip 
-                                        label={isInstallation ? 'Installation' : (dispenser?.sku || dispenser?.unique_code || 'N/A')} 
-                                        size="small" 
-                                        variant="outlined"
-                                      />
-                                    </TableCell>
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      <Chip 
-                                        label={assignment.task_type?.charAt(0).toUpperCase() + assignment.task_type?.slice(1) || 'Refill'} 
-                                        size="small" 
-                                        color={assignment.task_type === 'maintenance' ? 'secondary' : 'primary'}
-                                        variant="outlined"
-                                      />
-                                    </TableCell>
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      <Typography variant="body2">
-                                        {formatDateIST(assignment.assigned_date)}
-                                      </Typography>
-                                    </TableCell>
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      <Typography variant="body2">
-                                        {formatDateIST(assignment.visit_date)}
-                                      </Typography>
-                                    </TableCell>
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      <Chip 
-                                        label={
-                                          assignment.status === 'completed' ? 'Completed' :
-                                          assignment.status === 'assigned' ? 'Assigned & Pending' :
-                                          assignment.status === 'cancelled' ? 'Cancelled' : 'Pending'
-                                        }
-                                        size="small" 
-                                        color={
-                                          assignment.status === 'completed' ? 'success' :
-                                          assignment.status === 'assigned' ? 'info' :
-                                          assignment.status === 'cancelled' ? 'error' : 'warning'
-                                        }
-                                      />
-                                    </TableCell>
-                                    <TableCell sx={{ py: 1.5 }}>
-                                      {isInstallation ? (
-                                        <Box sx={{ display: 'flex', gap: 1 }}>
-                                          <Button
-                                            variant="contained"
-                                            size="small"
-                                            color="primary"
-                                            onClick={() => {
-                                              const clientId = getClientIdFromInstallationTask(assignment);
-                                              if (clientId) {
-                                                setClientAccessView({ clientId, assignmentId: assignment.id });
-                                                setClientAccessTab(0);
-                                              }
-                                            }}
-                                            sx={{ textTransform: 'none' }}
-                                            startIcon={<Business />}
-                                          >
-                                            Client Access
-                                          </Button>
-                                          <Button
-                                            variant="contained"
-                                            size="small"
-                                            color="success"
-                                            startIcon={<Done />}
-                                            onClick={() => {
-                                              setSelectedAssignment(assignment);
-                                              setCompletionNotes('');
-                                              setCompleteDialogOpen(true);
-                                            }}
-                                            sx={{ textTransform: 'none' }}
-                                          >
-                                            Complete
-                                          </Button>
-                                        </Box>
-                                      ) : (
-                                        <Box sx={{ display: 'flex', gap: 1 }}>
-                                          <Button
-                                            variant="contained"
-                                            size="small"
-                                            color="success"
-                                            startIcon={<Done />}
-                                            onClick={() => {
-                                              setSelectedAssignment(assignment);
-                                              setCompletionNotes('');
-                                              setCompleteDialogOpen(true);
-                                            }}
-                                            sx={{ textTransform: 'none' }}
-                                          >
-                                            Complete
-                                          </Button>
-                                          {dispenser && (
-                                            <Button
-                                              variant="outlined"
-                                              size="small"
-                                              startIcon={<PlayArrow />}
-                                              onClick={() => handleRefillClick(dispenser)}
-                                              sx={{ textTransform: 'none' }}
-                                            >
-                                              Refill
-                                            </Button>
-                                          )}
-                                        </Box>
-                                      )}
-                                    </TableCell>
-                                  </TableRow>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                    {!isInstallation && <LocationOn fontSize="small" color="action" />}
+                                    <Typography variant="body2">
+                                      {isInstallation ? 'Installation Task' : (dispenser?.location || '-')}
+                                    </Typography>
+                                  </Box>
                                 );
-                              })}
-                            </TableBody>
-                          </Table>
-                        </TableContainer>
+                              },
+                            },
+                            { 
+                              id: 'machine', 
+                              label: 'Machine',
+                              render: (_, assignment) => {
+                                const dispenser = getDispenserDetails(assignment.dispenser_id);
+                                const isInstallation = assignment.task_type === 'installation';
+                                return (
+                                  <Chip 
+                                    label={isInstallation ? 'Installation' : (dispenser?.sku || dispenser?.unique_code || 'N/A')} 
+                                    size="small" 
+                                    variant="outlined"
+                                  />
+                                );
+                              },
+                            },
+                            { 
+                              id: 'task_type', 
+                              label: 'Task Type',
+                              render: (value) => (
+                                <Chip 
+                                  label={value?.charAt(0).toUpperCase() + value?.slice(1) || 'Refill'} 
+                                  size="small" 
+                                  color={value === 'maintenance' ? 'secondary' : 'primary'}
+                                  variant="outlined"
+                                />
+                              ),
+                            },
+                            { 
+                              id: 'assigned_date', 
+                              label: 'Assigned Date',
+                              render: (value) => formatDateIST(value),
+                            },
+                            { 
+                              id: 'visit_date', 
+                              label: 'Visit Date',
+                              render: (value) => formatDateIST(value),
+                            },
+                            { 
+                              id: 'status', 
+                              label: 'Status',
+                              render: (value) => (
+                                <Chip 
+                                  label={
+                                    value === 'completed' ? 'Completed' :
+                                    value === 'assigned' ? 'Assigned & Pending' :
+                                    value === 'cancelled' ? 'Cancelled' : 'Pending'
+                                  }
+                                  size="small" 
+                                  color={
+                                    value === 'completed' ? 'success' :
+                                    value === 'assigned' ? 'info' :
+                                    value === 'cancelled' ? 'error' : 'warning'
+                                  }
+                                />
+                              ),
+                            },
+                          ]}
+                          data={pendingAssignments}
+                          renderActions={(assignment) => {
+                            const dispenser = getDispenserDetails(assignment.dispenser_id);
+                            const isInstallation = assignment.task_type === 'installation';
+                            
+                            if (isInstallation) {
+                              return (
+                                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
+                                  <Button
+                                    variant="contained"
+                                    size="small"
+                                    color="primary"
+                                    onClick={() => {
+                                      const clientId = getClientIdFromInstallationTask(assignment);
+                                      if (clientId) {
+                                        setClientAccessView({ clientId, assignmentId: assignment.id });
+                                        setClientAccessTab(0);
+                                      }
+                                    }}
+                                    sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
+                                    startIcon={<Business />}
+                                  >
+                                    Client Access
+                                  </Button>
+                                  <Button
+                                    variant="contained"
+                                    size="small"
+                                    color="success"
+                                    startIcon={<Done />}
+                                    onClick={() => {
+                                      setSelectedAssignment(assignment);
+                                      setCompletionNotes('');
+                                      setCompleteDialogOpen(true);
+                                    }}
+                                    sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
+                                  >
+                                    Complete
+                                  </Button>
+                                </Box>
+                              );
+                            }
+                            
+                            return (
+                              <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
+                                <Button
+                                  variant="contained"
+                                  size="small"
+                                  color="success"
+                                  startIcon={<Done />}
+                                  onClick={() => {
+                                    setSelectedAssignment(assignment);
+                                    setCompletionNotes('');
+                                    setCompleteDialogOpen(true);
+                                  }}
+                                  sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
+                                >
+                                  Complete
+                                </Button>
+                                {dispenser && (
+                                  <Button
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={<PlayArrow />}
+                                    onClick={() => handleRefillClick(dispenser)}
+                                    sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
+                                  >
+                                    Refill
+                                  </Button>
+                                )}
+                              </Box>
+                            );
+                          }}
+                        />
                       )}
                     </CardContent>
                   </Card>
@@ -1785,159 +1839,171 @@ function TechnicianDashboard() {
                           </Typography>
                         </Box>
                       ) : (
-                        <TableContainer>
-                          <Table>
-                            <TableHead>
-                              <TableRow sx={{ bgcolor: 'grey.50' }}>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Client</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Location</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Machine</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Task Type</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Assigned By</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Assigned Date</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Status</TableCell>
-                                <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Action</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {assignments
-                                .sort((a, b) => new Date(b.assigned_date) - new Date(a.assigned_date))
-                                .map((assignment, index) => {
-                                  const dispenser = getDispenserDetails(assignment.dispenser_id);
-                                  const installationClientId = assignment.task_type === 'installation' 
-                                    ? getClientIdFromInstallationTask(assignment) 
-                                    : null;
-                                  const clientId = installationClientId || dispenser?.client_id;
-                                  return (
-                                    <TableRow 
-                                      key={assignment.id}
-                                      hover
-                                      sx={{ bgcolor: index % 2 === 0 ? 'white' : 'grey.50' }}
+                        <ResponsiveTable
+                          columns={[
+                            { 
+                              id: 'client', 
+                              label: 'Client',
+                              render: (_, assignment) => {
+                                const dispenser = getDispenserDetails(assignment.dispenser_id);
+                                const installationClientId = assignment.task_type === 'installation' 
+                                  ? getClientIdFromInstallationTask(assignment) 
+                                  : null;
+                                const clientId = installationClientId || dispenser?.client_id;
+                                return (
+                                  <Typography variant="body2" fontWeight={500}>
+                                    {getClientName(clientId)}
+                                  </Typography>
+                                );
+                              },
+                              bold: true,
+                            },
+                            { 
+                              id: 'location', 
+                              label: 'Location',
+                              render: (_, assignment) => {
+                                const dispenser = getDispenserDetails(assignment.dispenser_id);
+                                return (
+                                  <Typography variant="body2">
+                                    {assignment.task_type === 'installation' ? 'Installation Task' : (dispenser?.location || '-')}
+                                  </Typography>
+                                );
+                              },
+                            },
+                            { 
+                              id: 'machine', 
+                              label: 'Machine',
+                              render: (_, assignment) => {
+                                const dispenser = getDispenserDetails(assignment.dispenser_id);
+                                return (
+                                  <Chip 
+                                    label={assignment.task_type === 'installation' ? 'Installation' : (dispenser?.sku || dispenser?.unique_code || 'N/A')} 
+                                    size="small" 
+                                    variant="outlined"
+                                  />
+                                );
+                              },
+                            },
+                            { 
+                              id: 'task_type', 
+                              label: 'Task Type',
+                              render: (value) => (
+                                <Chip 
+                                  label={value?.charAt(0).toUpperCase() + value?.slice(1) || 'Refill'} 
+                                  size="small" 
+                                  color={value === 'maintenance' ? 'secondary' : 'primary'}
+                                  variant="outlined"
+                                />
+                              ),
+                            },
+                            { id: 'assigned_by', label: 'Assigned By' },
+                            { 
+                              id: 'assigned_date', 
+                              label: 'Assigned Date',
+                              render: (value) => formatDateIST(value),
+                            },
+                            { 
+                              id: 'status', 
+                              label: 'Status',
+                              render: (value) => (
+                                <Chip 
+                                  label={
+                                    value === 'completed' ? 'Completed' :
+                                    value === 'assigned' ? 'Assigned & Pending' :
+                                    value === 'cancelled' ? 'Cancelled' : 'Pending'
+                                  }
+                                  size="small" 
+                                  color={
+                                    value === 'completed' ? 'success' :
+                                    value === 'assigned' ? 'info' :
+                                    value === 'cancelled' ? 'error' : 'warning'
+                                  }
+                                />
+                              ),
+                            },
+                          ]}
+                          data={assignments.sort((a, b) => new Date(b.assigned_date) - new Date(a.assigned_date))}
+                          renderActions={(assignment) => {
+                            const dispenser = getDispenserDetails(assignment.dispenser_id);
+                            
+                            if (assignment.status === 'completed') {
+                              return (
+                                <Typography variant="body2" color="success.main">
+                                  ✓ Done
+                                </Typography>
+                              );
+                            }
+                            
+                            if (assignment.task_type === 'installation' && (assignment.status === 'pending' || assignment.status === 'assigned')) {
+                              return (
+                                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
+                                  <Button
+                                    variant="contained"
+                                    size="small"
+                                    color="primary"
+                                    onClick={() => {
+                                      const clientId = getClientIdFromInstallationTask(assignment);
+                                      if (clientId) {
+                                        setClientAccessView({ clientId, assignmentId: assignment.id });
+                                        setClientAccessTab(0);
+                                      }
+                                    }}
+                                    sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
+                                    startIcon={<Business />}
+                                  >
+                                    Client Access
+                                  </Button>
+                                  <Button
+                                    variant="contained"
+                                    size="small"
+                                    color="success"
+                                    startIcon={<Done />}
+                                    onClick={() => {
+                                      setSelectedAssignment(assignment);
+                                      setCompletionNotes('');
+                                      setCompleteDialogOpen(true);
+                                    }}
+                                    sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
+                                  >
+                                    Complete
+                                  </Button>
+                                </Box>
+                              );
+                            }
+                            
+                            if (assignment.task_type !== 'installation' && (assignment.status === 'pending' || assignment.status === 'assigned')) {
+                              return (
+                                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
+                                  <Button
+                                    variant="contained"
+                                    size="small"
+                                    color="success"
+                                    onClick={() => {
+                                      setSelectedAssignment(assignment);
+                                      setCompletionNotes('');
+                                      setCompleteDialogOpen(true);
+                                    }}
+                                    sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
+                                  >
+                                    Complete
+                                  </Button>
+                                  {dispenser && (
+                                    <Button
+                                      variant="outlined"
+                                      size="small"
+                                      onClick={() => handleRefillClick(dispenser)}
+                                      sx={{ textTransform: 'none', width: { xs: '100%', sm: 'auto' } }}
                                     >
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        <Typography variant="body2" fontWeight={500}>
-                                          {getClientName(clientId)}
-                                        </Typography>
-                                      </TableCell>
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        <Typography variant="body2">
-                                          {assignment.task_type === 'installation' ? 'Installation Task' : (dispenser?.location || '-')}
-                                        </Typography>
-                                      </TableCell>
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        <Chip 
-                                          label={assignment.task_type === 'installation' ? 'Installation' : (dispenser?.sku || dispenser?.unique_code || 'N/A')} 
-                                          size="small" 
-                                          variant="outlined"
-                                        />
-                                      </TableCell>
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        <Chip 
-                                          label={assignment.task_type?.charAt(0).toUpperCase() + assignment.task_type?.slice(1) || 'Refill'} 
-                                          size="small" 
-                                          color={assignment.task_type === 'maintenance' ? 'secondary' : 'primary'}
-                                          variant="outlined"
-                                        />
-                                      </TableCell>
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        <Typography variant="body2">
-                                          {assignment.assigned_by || '-'}
-                                        </Typography>
-                                      </TableCell>
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        <Typography variant="body2">
-                                          {formatDateIST(assignment.assigned_date)}
-                                        </Typography>
-                                      </TableCell>
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        <Chip 
-                                          label={
-                                            assignment.status === 'completed' ? 'Completed' :
-                                            assignment.status === 'assigned' ? 'Assigned & Pending' :
-                                            assignment.status === 'cancelled' ? 'Cancelled' : 'Pending'
-                                          }
-                                          size="small" 
-                                          color={
-                                            assignment.status === 'completed' ? 'success' :
-                                            assignment.status === 'assigned' ? 'info' :
-                                            assignment.status === 'cancelled' ? 'error' : 'warning'
-                                          }
-                                        />
-                                      </TableCell>
-                                      <TableCell sx={{ py: 1.5 }}>
-                                        {assignment.task_type === 'installation' && (assignment.status === 'pending' || assignment.status === 'assigned') && (
-                                          <Box sx={{ display: 'flex', gap: 1 }}>
-                                            <Button
-                                              variant="contained"
-                                              size="small"
-                                              color="primary"
-                                              onClick={() => {
-                                                const clientId = getClientIdFromInstallationTask(assignment);
-                                                if (clientId) {
-                                                  setClientAccessView({ clientId, assignmentId: assignment.id });
-                                                  setClientAccessTab(0);
-                                                }
-                                              }}
-                                              sx={{ textTransform: 'none' }}
-                                              startIcon={<Business />}
-                                            >
-                                              Client Access
-                                            </Button>
-                                            <Button
-                                              variant="contained"
-                                              size="small"
-                                              color="success"
-                                              startIcon={<Done />}
-                                              onClick={() => {
-                                                setSelectedAssignment(assignment);
-                                                setCompletionNotes('');
-                                                setCompleteDialogOpen(true);
-                                              }}
-                                              sx={{ textTransform: 'none' }}
-                                            >
-                                              Complete
-                                            </Button>
-                                          </Box>
-                                        )}
-                                        {assignment.task_type !== 'installation' && (assignment.status === 'pending' || assignment.status === 'assigned') && (
-                                          <Box sx={{ display: 'flex', gap: 1 }}>
-                                            <Button
-                                              variant="contained"
-                                              size="small"
-                                              color="success"
-                                              onClick={() => {
-                                                setSelectedAssignment(assignment);
-                                                setCompletionNotes('');
-                                                setCompleteDialogOpen(true);
-                                              }}
-                                              sx={{ textTransform: 'none' }}
-                                            >
-                                              Complete
-                                            </Button>
-                                            {dispenser && (
-                                              <Button
-                                                variant="outlined"
-                                                size="small"
-                                                onClick={() => handleRefillClick(dispenser)}
-                                                sx={{ textTransform: 'none' }}
-                                              >
-                                                Refill
-                                              </Button>
-                                            )}
-                                          </Box>
-                                        )}
-                                        {assignment.status === 'completed' && (
-                                          <Typography variant="body2" color="success.main">
-                                            ✓ Done
-                                          </Typography>
-                                        )}
-                                      </TableCell>
-                                    </TableRow>
-                                  );
-                                })}
-                            </TableBody>
-                          </Table>
-                        </TableContainer>
+                                      Refill
+                                    </Button>
+                                  )}
+                                </Box>
+                              );
+                            }
+                            
+                            return null;
+                          }}
+                        />
                       )}
                     </CardContent>
                   </Card>
@@ -1995,103 +2061,111 @@ function TechnicianDashboard() {
                             </Typography>
                           </Box>
                         ) : (
-                          <TableContainer>
-                            <Table>
-                              <TableHead>
-                                <TableRow sx={{ bgcolor: 'grey.50' }}>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Client</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Location</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Machine</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Task Type</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Assigned By</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Assigned Date</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Completed Date</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Status</TableCell>
-                                  <TableCell sx={{ fontWeight: 600, py: 1.5 }}>Notes</TableCell>
-                                </TableRow>
-                              </TableHead>
-                              <TableBody>
-                                {completedTasks
-                                  .sort((a, b) => new Date(b.completed_date || b.assigned_date) - new Date(a.completed_date || a.assigned_date))
-                                  .map((assignment, index) => {
-                                    const dispenser = getDispenserDetails(assignment.dispenser_id);
-                                    const installationClientId = assignment.task_type === 'installation' 
-                                      ? getClientIdFromInstallationTask(assignment) 
-                                      : null;
-                                    const clientId = installationClientId || dispenser?.client_id;
-                                    const isInstallation = assignment.task_type === 'installation';
-                                    return (
-                                      <TableRow 
-                                        key={assignment.id}
-                                        hover
-                                        sx={{ bgcolor: index % 2 === 0 ? 'white' : 'grey.50' }}
-                                      >
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Typography variant="body2" fontWeight={500}>
-                                            {getClientName(clientId)}
-                                          </Typography>
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Typography variant="body2">
-                                            {isInstallation ? 'Installation Task' : (dispenser?.location || '-')}
-                                          </Typography>
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Chip 
-                                            label={isInstallation ? 'Installation' : (dispenser?.sku || dispenser?.unique_code || 'N/A')} 
-                                            size="small" 
-                                            variant="outlined"
-                                          />
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Chip 
-                                            label={assignment.task_type?.charAt(0).toUpperCase() + assignment.task_type?.slice(1) || 'Refill'} 
-                                            size="small" 
-                                            color={
-                                              assignment.task_type === 'maintenance' ? 'secondary' :
-                                              assignment.task_type === 'installation' ? 'info' : 'primary'
-                                            }
-                                            variant="outlined"
-                                          />
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Typography variant="body2">
-                                            {assignment.assigned_by || '-'}
-                                          </Typography>
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Typography variant="body2">
-                                            {formatDateIST(assignment.assigned_date)}
-                                          </Typography>
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Typography variant="body2" color="success.main" fontWeight={500}>
-                                            {formatDateIST(assignment.completed_date)}
-                                          </Typography>
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Chip 
-                                            label="Completed"
-                                            size="small" 
-                                            color="success"
-                                          />
-                                        </TableCell>
-                                        <TableCell sx={{ py: 1.5 }}>
-                                          <Typography variant="body2" color="text.secondary" sx={{ 
-                                            maxWidth: 200, 
-                                            overflow: 'hidden', 
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap'
-                                          }}>
-                                            {assignment.notes || '-'}
-                                          </Typography>
-                                        </TableCell>
-                                      </TableRow>
-                                    );
-                                  })}
-                              </TableBody>
-                            </Table>
-                          </TableContainer>
+                          <ResponsiveTable
+                            columns={[
+                              { 
+                                id: 'client', 
+                                label: 'Client',
+                                render: (_, assignment) => {
+                                  const dispenser = getDispenserDetails(assignment.dispenser_id);
+                                  const installationClientId = assignment.task_type === 'installation' 
+                                    ? getClientIdFromInstallationTask(assignment) 
+                                    : null;
+                                  const clientId = installationClientId || dispenser?.client_id;
+                                  return (
+                                    <Typography variant="body2" fontWeight={500}>
+                                      {getClientName(clientId)}
+                                    </Typography>
+                                  );
+                                },
+                                bold: true,
+                              },
+                              { 
+                                id: 'location', 
+                                label: 'Location',
+                                render: (_, assignment) => {
+                                  const dispenser = getDispenserDetails(assignment.dispenser_id);
+                                  const isInstallation = assignment.task_type === 'installation';
+                                  return (
+                                    <Typography variant="body2">
+                                      {isInstallation ? 'Installation Task' : (dispenser?.location || '-')}
+                                    </Typography>
+                                  );
+                                },
+                              },
+                              { 
+                                id: 'machine', 
+                                label: 'Machine',
+                                render: (_, assignment) => {
+                                  const dispenser = getDispenserDetails(assignment.dispenser_id);
+                                  const isInstallation = assignment.task_type === 'installation';
+                                  return (
+                                    <Chip 
+                                      label={isInstallation ? 'Installation' : (dispenser?.sku || dispenser?.unique_code || 'N/A')} 
+                                      size="small" 
+                                      variant="outlined"
+                                    />
+                                  );
+                                },
+                              },
+                              { 
+                                id: 'task_type', 
+                                label: 'Task Type',
+                                render: (value) => (
+                                  <Chip 
+                                    label={value?.charAt(0).toUpperCase() + value?.slice(1) || 'Refill'} 
+                                    size="small" 
+                                    color={
+                                      value === 'maintenance' ? 'secondary' :
+                                      value === 'installation' ? 'info' : 'primary'
+                                    }
+                                    variant="outlined"
+                                  />
+                                ),
+                              },
+                              { id: 'assigned_by', label: 'Assigned By' },
+                              { 
+                                id: 'assigned_date', 
+                                label: 'Assigned Date',
+                                render: (value) => formatDateIST(value),
+                              },
+                              { 
+                                id: 'completed_date', 
+                                label: 'Completed Date',
+                                render: (value) => (
+                                  <Typography variant="body2" color="success.main" fontWeight={500}>
+                                    {formatDateIST(value)}
+                                  </Typography>
+                                ),
+                              },
+                              { 
+                                id: 'status', 
+                                label: 'Status',
+                                render: () => (
+                                  <Chip 
+                                    label="Completed"
+                                    size="small" 
+                                    color="success"
+                                  />
+                                ),
+                              },
+                              { 
+                                id: 'notes', 
+                                label: 'Notes',
+                                render: (value) => (
+                                  <Typography variant="body2" color="text.secondary" sx={{ 
+                                    maxWidth: { xs: '100%', md: 200 }, 
+                                    overflow: 'hidden', 
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}>
+                                    {value || '-'}
+                                  </Typography>
+                                ),
+                              },
+                            ]}
+                            data={completedTasks.sort((a, b) => new Date(b.completed_date || b.assigned_date) - new Date(a.completed_date || a.assigned_date))}
+                          />
                         );
                       })()}
                     </CardContent>
@@ -2105,7 +2179,13 @@ function TechnicianDashboard() {
       </Container>
 
         {/* Refill Dialog */}
-        <Dialog open={refillDialogOpen} onClose={() => setRefillDialogOpen(false)} maxWidth="md" fullWidth>
+        <Dialog 
+          open={refillDialogOpen} 
+          onClose={() => setRefillDialogOpen(false)} 
+          maxWidth="md" 
+          fullWidth
+          fullScreen={isMobile}
+        >
           <DialogTitle>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Devices sx={{ color: 'primary.main' }} />
@@ -2328,7 +2408,13 @@ function TechnicianDashboard() {
         </Dialog>
 
         {/* Refill Code Entry Dialog */}
-        <Dialog open={refillCodeEntryDialogOpen} onClose={() => setRefillCodeEntryDialogOpen(false)} maxWidth="sm" fullWidth>
+        <Dialog 
+          open={refillCodeEntryDialogOpen} 
+          onClose={() => setRefillCodeEntryDialogOpen(false)} 
+          maxWidth="sm" 
+          fullWidth
+          fullScreen={isMobile}
+        >
           <DialogTitle>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Devices sx={{ color: 'primary.main' }} />
@@ -2385,7 +2471,13 @@ function TechnicianDashboard() {
         </Dialog>
 
         {/* Complete Task Dialog */}
-        <Dialog open={completeDialogOpen} onClose={() => setCompleteDialogOpen(false)} maxWidth="sm" fullWidth>
+        <Dialog 
+          open={completeDialogOpen} 
+          onClose={() => setCompleteDialogOpen(false)} 
+          maxWidth="sm" 
+          fullWidth
+          fullScreen={isMobile}
+        >
           <DialogTitle>Complete Task</DialogTitle>
           <DialogContent>
             {selectedAssignment && (
@@ -2426,7 +2518,13 @@ function TechnicianDashboard() {
       </Dialog>
 
       {/* View Dispenser Dialog */}
-      <Dialog open={!!viewingDispenser} onClose={() => setViewingDispenser(null)} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={!!viewingDispenser} 
+        onClose={() => setViewingDispenser(null)} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>Machine Details</DialogTitle>
         <DialogContent>
           {viewingDispenser && (
@@ -2543,7 +2641,13 @@ function TechnicianDashboard() {
       </Dialog>
 
       {/* Add Machine Dialog */}
-      <Dialog open={addMachineDialogOpen} onClose={() => setAddMachineDialogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={addMachineDialogOpen} 
+        onClose={() => setAddMachineDialogOpen(false)} 
+        maxWidth="sm" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>Add Machine Asset to Client</DialogTitle>
         <DialogContent>
           <FormControl fullWidth margin="normal" required>
@@ -2596,7 +2700,13 @@ function TechnicianDashboard() {
       </Dialog>
 
       {/* Create Installation Dialog */}
-      <Dialog open={installationDialogOpen} onClose={() => setInstallationDialogOpen(false)} maxWidth="md" fullWidth>
+      <Dialog 
+        open={installationDialogOpen} 
+        onClose={() => setInstallationDialogOpen(false)} 
+        maxWidth="md" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>Create New Installation</DialogTitle>
         <DialogContent>
           <TextField
@@ -2860,7 +2970,13 @@ function TechnicianDashboard() {
       </Dialog>
 
       {/* Custom Schedule Dialog */}
-      <Dialog open={customScheduleDialogOpen} onClose={() => setCustomScheduleDialogOpen(false)} maxWidth="md" fullWidth>
+      <Dialog 
+        open={customScheduleDialogOpen} 
+        onClose={() => setCustomScheduleDialogOpen(false)} 
+        maxWidth="md" 
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>Create Custom Schedule</DialogTitle>
         <DialogContent>
           <TextField

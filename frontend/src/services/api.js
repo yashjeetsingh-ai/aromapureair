@@ -9,6 +9,23 @@ const api = axios.create({
   },
 });
 
+// Attach token to every request
+api.interceptors.request.use((config) => {
+  try {
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
+      const parsed = JSON.parse(storedUser);
+      if (parsed?.token) {
+        config.headers = config.headers || {};
+        config.headers.Authorization = `Bearer ${parsed.token}`;
+      }
+    }
+  } catch {
+    // ignore parsing errors
+  }
+  return config;
+});
+
 export const login = async (username, password) => {
   const response = await api.post('/login', { username, password });
   return response.data;

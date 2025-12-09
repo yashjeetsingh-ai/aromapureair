@@ -43,8 +43,8 @@ function Login() {
         bgcolor: 'background.default',
       }}
     >
-      <Container maxWidth="sm">
-        <Paper elevation={2} sx={{ p: 4, width: '100%', border: '1px solid', borderColor: 'divider' }}>
+      <Container maxWidth="sm" sx={{ px: { xs: 2, sm: 3 } }}>
+        <Paper elevation={2} sx={{ p: { xs: 3, sm: 4 }, width: '100%', border: '1px solid', borderColor: 'divider' }}>
           <Box sx={{ textAlign: 'center', mb: 4 }}>
             <Box sx={{ mb: 3, display: 'flex', justifyContent: 'center' }}>
               <Logo size="large" color="primary" />

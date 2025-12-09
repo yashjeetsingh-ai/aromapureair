@@ -11,6 +11,8 @@ import {
   Typography,
   Divider,
   Avatar,
+  useTheme,
+  useMediaQuery,
 } from '@mui/material';
 import {
   Devices,
@@ -26,7 +28,7 @@ import Logo from './Logo';
 
 const drawerWidth = 260;
 
-function Sidebar({ user, logout, role }) {
+function Sidebar({ user, logout, role, mobileOpen, onMobileClose }) {
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -140,21 +142,11 @@ function Sidebar({ user, logout, role }) {
     return location.pathname === item.path && (location.state?.tab === undefined || location.state?.tab === null);
   };
 
-  return (
-    <Drawer
-      variant="permanent"
-      sx={{
-        width: drawerWidth,
-        flexShrink: 0,
-        '& .MuiDrawer-paper': {
-          width: drawerWidth,
-          boxSizing: 'border-box',
-          bgcolor: 'background.paper',
-          borderRight: '1px solid',
-          borderColor: 'divider',
-        },
-      }}
-    >
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+
+  const drawerContent = (
+    <>
       <Box
         sx={{
           p: 2.5,
@@ -254,7 +246,50 @@ function Sidebar({ user, logout, role }) {
           <ListItemText primary="Logout" primaryTypographyProps={{ fontWeight: 600 }} />
         </ListItemButton>
       </Box>
-    </Drawer>
+    </>
+  );
+
+  return (
+    <>
+      {/* Mobile drawer */}
+      <Drawer
+        variant="temporary"
+        open={mobileOpen}
+        onClose={onMobileClose}
+        ModalProps={{
+          keepMounted: true, // Better open performance on mobile
+        }}
+        sx={{
+          display: { xs: 'block', md: 'none' },
+          '& .MuiDrawer-paper': {
+            width: drawerWidth,
+            boxSizing: 'border-box',
+            bgcolor: 'background.paper',
+          },
+        }}
+      >
+        {drawerContent}
+      </Drawer>
+      
+      {/* Desktop drawer */}
+      <Drawer
+        variant="permanent"
+        sx={{
+          display: { xs: 'none', md: 'block' },
+          width: drawerWidth,
+          flexShrink: 0,
+          '& .MuiDrawer-paper': {
+            width: drawerWidth,
+            boxSizing: 'border-box',
+            bgcolor: 'background.paper',
+            borderRight: '1px solid',
+            borderColor: 'divider',
+          },
+        }}
+      >
+        {drawerContent}
+      </Drawer>
+    </>
   );
 }
 
