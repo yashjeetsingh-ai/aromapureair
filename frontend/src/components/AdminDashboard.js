@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
+import { formatDateIST, formatDateTimeIST, formatDateTimeFullIST, toISTDateTimeLocal, fromISTDateTimeLocal, toISTDateLocal, fromISTDateLocal, getCurrentISTISO } from '../utils/dateUtils';
 import {
   Container,
   Typography,
@@ -27,6 +28,11 @@ import {
   Card,
   CardContent,
   Grid,
+  Tabs,
+  Tab,
+  Checkbox,
+  ListItemText,
+  OutlinedInput,
 } from '@mui/material';
 import { 
   Refresh, 
@@ -43,10 +49,18 @@ import {
   CheckCircle,
   Error as ErrorIcon,
   Visibility,
+  PersonAdd,
+  Assignment,
+  PlaylistAdd,
+  Build,
+  Cancel,
+  EventNote,
+  Close,
 } from '@mui/icons-material';
 import { useLocation } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import Sidebar from './Sidebar';
+import TechnicianView from './TechnicianView';
 import {
   getDispensers,
   getSchedules,
@@ -64,6 +78,11 @@ import {
   createUser,
   updateUser,
   deleteUser,
+  createTechnicianAssignment,
+  getTechnicianAssignments,
+  updateTechnicianAssignment,
+  deleteTechnicianAssignment,
+  getTechnicianStats,
 } from '../services/api';
 
 function AdminDashboard() {
@@ -78,6 +97,12 @@ function AdminDashboard() {
   const [refillLogs, setRefillLogs] = useState([]);
   const [usageData, setUsageData] = useState({});
   const [loading, setLoading] = useState(true);
+  
+  // Technician View Mode
+  const [technicianViewMode, setTechnicianViewMode] = useState(false);
+  const [selectedTechnicianForView, setSelectedTechnicianForView] = useState('');
+  const [technicianAssignments, setTechnicianAssignments] = useState([]);
+  const [technicianStats, setTechnicianStats] = useState(null);
   
   // Filter states for Installed tab
   const [installedFilters, setInstalledFilters] = useState({
@@ -99,6 +124,37 @@ function AdminDashboard() {
   const [editingMachine, setEditingMachine] = useState(null);
   const [editingUser, setEditingUser] = useState(null);
   const [editingInstallation, setEditingInstallation] = useState(null);
+  
+  // Assign Technician states
+  const [assignTechnicianDialogOpen, setAssignTechnicianDialogOpen] = useState(false);
+  const [selectedMachineForAssignment, setSelectedMachineForAssignment] = useState(null);
+  const [selectedTechnician, setSelectedTechnician] = useState('');
+  const [assignVisitDate, setAssignVisitDate] = useState('');
+  const [assignServiceType, setAssignServiceType] = useState('refill');
+  
+  // Assign Task states
+  const [assignTaskDialogOpen, setAssignTaskDialogOpen] = useState(false);
+  const [assignTaskSubTab, setAssignTaskSubTab] = useState(0); // 0 = Machine List, 1 = Assigned Tasks
+  const [assignedTasks, setAssignedTasks] = useState([]);
+  const [assignTaskForm, setAssignTaskForm] = useState({
+    client_id: '',
+    service_type: 'refill', // refill, maintenance, installation, discontinue
+    machine_codes: [], // Multiple machine codes
+    selected_machines: [], // Array of {code, location, sku} objects
+    visit_date: '',
+    technician_username: '',
+    notes: '',
+  });
+  const [editingTask, setEditingTask] = useState(null);
+  const [editTaskForm, setEditTaskForm] = useState({
+    technician_username: '',
+    visit_date: '',
+    task_type: 'refill',
+    status: 'pending',
+    notes: '',
+  });
+  const [deleteTaskDialogOpen, setDeleteTaskDialogOpen] = useState(false);
+  const [taskToDelete, setTaskToDelete] = useState(null);
 
   // Form states
   const [clientForm, setClientForm] = useState({
@@ -132,6 +188,7 @@ function AdminDashboard() {
     schedule_id: '',
     refill_amount_ml: 0,
     last_refill_date: null,
+    installation_date: null,
     calculated_current_level: 0,
   });
 
@@ -174,18 +231,20 @@ function AdminDashboard() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [dispensersData, schedulesData, logsData, clientsData, usersData] = await Promise.all([
+      const [dispensersData, schedulesData, logsData, clientsData, usersData, assignmentsData] = await Promise.all([
         getDispensers(),
         getSchedules(),
         getRefillLogs(),
         getClients(),
         getUsers(),
+        getTechnicianAssignments(),
       ]);
       setDispensers(dispensersData);
       setSchedules(schedulesData);
       setRefillLogs(logsData);
       setClients(clientsData);
       setUsers(usersData);
+      setAssignedTasks(assignmentsData);
 
       // Load usage data for each dispenser
       const usagePromises = dispensersData.map(async (d) => {
@@ -205,6 +264,37 @@ function AdminDashboard() {
     }
   };
 
+  const loadTechnicianData = async (technicianUsername) => {
+    try {
+      const [assignmentsData, statsData] = await Promise.all([
+        getTechnicianAssignments(technicianUsername),
+        getTechnicianStats(technicianUsername),
+      ]);
+      setTechnicianAssignments(assignmentsData);
+      setTechnicianStats(statsData);
+    } catch (err) {
+      console.error('Error loading technician data:', err);
+    }
+  };
+
+  const handleTechnicianViewChange = async (technicianUsername) => {
+    if (technicianUsername) {
+      setSelectedTechnicianForView(technicianUsername);
+      setTechnicianViewMode(true);
+      setLoading(true);
+      try {
+        await loadTechnicianData(technicianUsername);
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      setSelectedTechnicianForView('');
+      setTechnicianViewMode(false);
+      setTechnicianAssignments([]);
+      setTechnicianStats(null);
+    }
+  };
+
   // eslint-disable-next-line no-unused-vars
   const handleScheduleChange = async (dispenserId, scheduleId) => {
     try {
@@ -213,6 +303,46 @@ function AdminDashboard() {
     } catch (err) {
       console.error('Error assigning schedule:', err);
       alert('Error assigning schedule: ' + (err.response?.data?.detail || 'Unknown error'));
+    }
+  };
+
+  const handleEditTask = async () => {
+    if (!editingTask) return;
+    try {
+      await updateTechnicianAssignment(editingTask.id, {
+        technician_username: editTaskForm.technician_username,
+        visit_date: editTaskForm.visit_date ? new Date(editTaskForm.visit_date).toISOString() : null,
+        task_type: editTaskForm.task_type,
+        status: editTaskForm.status,
+        notes: editTaskForm.notes,
+      });
+      setEditingTask(null);
+      setEditTaskForm({
+        technician_username: '',
+        visit_date: '',
+        task_type: 'refill',
+        status: 'pending',
+        notes: '',
+      });
+      loadData();
+      alert('Task updated successfully!');
+    } catch (err) {
+      console.error('Error updating task:', err);
+      alert('Error updating task: ' + (err.response?.data?.detail || 'Unknown error'));
+    }
+  };
+
+  const handleDeleteTask = async () => {
+    if (!taskToDelete) return;
+    try {
+      await deleteTechnicianAssignment(taskToDelete.id);
+      setTaskToDelete(null);
+      setDeleteTaskDialogOpen(false);
+      loadData();
+      alert('Task deleted successfully!');
+    } catch (err) {
+      console.error('Error deleting task:', err);
+      alert('Error deleting task: ' + (err.response?.data?.detail || 'Unknown error'));
     }
   };
 
@@ -355,7 +485,66 @@ function AdminDashboard() {
       };
       
       if (editingMachine) {
+        // Check if this is a SKU template (no client_id) before updating
+        const isSKUTemplate = !editingMachine.client_id;
+        const oldMlPerHour = editingMachine.ml_per_hour;
+        const newMlPerHour = parseFloat(machineForm.ml_per_hour);
+        const oldCapacity = editingMachine.refill_capacity_ml;
+        const newCapacity = parseFloat(machineForm.refill_capacity_ml);
+        
+        // Check if ml_per_hour or capacity changed
+        const mlPerHourChanged = isSKUTemplate && oldMlPerHour !== newMlPerHour;
+        const capacityChanged = isSKUTemplate && oldCapacity !== newCapacity;
+        
         await updateDispenser(editingMachine.id, machineData);
+        
+        // If updating a SKU template (no client_id) and ml_per_hour or capacity changed, 
+        // update all installed/assigned machines with the same SKU
+        if (isSKUTemplate && (mlPerHourChanged || capacityChanged)) {
+          // Get fresh list of all dispensers (including client_machines.json) to find machines to update
+          const allDispensersData = await getDispensers();
+          
+          // Find all machines (installed and assigned) with the same SKU
+          const machinesToUpdate = allDispensersData.filter(d => 
+            d.sku === machineForm.sku && 
+            d.client_id && // Only update client machines, not other SKU templates
+            d.id !== editingMachine.id // Don't update the template itself
+          );
+          
+          if (machinesToUpdate.length > 0) {
+            const shouldUpdate = window.confirm(
+              `This SKU template is used by ${machinesToUpdate.length} installed/assigned machine(s).\n\n` +
+              `Do you want to update their ${mlPerHourChanged && capacityChanged ? 'ML Per Hour and Capacity' : mlPerHourChanged ? 'ML Per Hour' : 'Capacity'} to match the new SKU template values?\n\n` +
+              `This will update:\n` +
+              `${mlPerHourChanged ? `- ML Per Hour: ${oldMlPerHour} → ${newMlPerHour}\n` : ''}` +
+              `${capacityChanged ? `- Capacity: ${oldCapacity} → ${newCapacity}\n` : ''}`
+            );
+            
+            if (shouldUpdate) {
+              // Update all machines with the same SKU
+              const updatePromises = machinesToUpdate.map(async (machine) => {
+                const updatedMachine = {
+                  ...machine,
+                  ml_per_hour: mlPerHourChanged ? newMlPerHour : machine.ml_per_hour,
+                  refill_capacity_ml: capacityChanged ? newCapacity : machine.refill_capacity_ml,
+                };
+                await updateDispenser(machine.id, updatedMachine);
+                
+                // Recalculate usage if machine has a schedule
+                if (machine.current_schedule_id) {
+                  try {
+                    await calculateUsage(machine.id);
+                  } catch (err) {
+                    console.error(`Error recalculating usage for ${machine.id}:`, err);
+                  }
+                }
+              });
+              
+              await Promise.all(updatePromises);
+              alert(`Successfully updated ${machinesToUpdate.length} machine(s) with the new SKU values.`);
+            }
+          }
+        }
       } else {
         await createDispenser(machineData);
       }
@@ -538,6 +727,7 @@ function AdminDashboard() {
         schedule_id: dispenser.current_schedule_id || '',
         refill_amount_ml: refillAmount,
         last_refill_date: dispenser.last_refill_date || null,
+        installation_date: dispenser.installation_date || null,
         calculated_current_level: calculated,
       });
     } else {
@@ -552,6 +742,7 @@ function AdminDashboard() {
         schedule_id: '',
         refill_amount_ml: 0,
         last_refill_date: null,
+        installation_date: getCurrentISTISO(), // Default to current date in IST for new installations
         calculated_current_level: 0,
       });
     }
@@ -635,7 +826,8 @@ function AdminDashboard() {
         status: 'assigned', // Status: assigned to client (not yet installed)
         current_schedule_id: null,
         current_level_ml: 0,
-        last_refill_date: addMachineToClientForm.installation_date || null,
+        last_refill_date: null,
+        installation_date: addMachineToClientForm.installation_date || null, // Store installation date if provided
         ml_per_hour: skuTemplate.ml_per_hour, // Copy from SKU template
         refill_capacity_ml: skuTemplate.refill_capacity_ml, // Copy from SKU template
         sku: skuTemplate.sku, // Keep the same SKU reference
@@ -724,6 +916,20 @@ function AdminDashboard() {
         return;
       }
 
+      // Ensure installation_date is always set for new installations
+      // For editing, preserve existing value if not provided, otherwise use form value or current date
+      let installationDate = installationForm.installation_date;
+      if (!installationDate || installationDate.trim() === '') {
+        if (editingInstallation) {
+          // When editing, try to preserve existing installation_date from the machine
+          const existingMachine = dispensers.find(d => d.id === (editingInstallation.id || assignedMachine?.id));
+          installationDate = existingMachine?.installation_date || getCurrentISTISO();
+        } else {
+          // For new installations, always set to current date if not provided
+          installationDate = getCurrentISTISO();
+        }
+      }
+      
       // Create/update installation data - this is an instance of the SKU, not a new SKU
       const installationData = {
         ...skuTemplate, // Start with SKU template properties
@@ -737,6 +943,7 @@ function AdminDashboard() {
         ml_per_hour: installationForm.ml_per_hour ? parseFloat(installationForm.ml_per_hour) : skuTemplate.ml_per_hour, // Use form value or fallback to SKU template (required)
         refill_capacity_ml: skuTemplate.refill_capacity_ml, // Copy from SKU template
         last_refill_date: installationForm.last_refill_date || null,
+        installation_date: installationDate, // Always set installation date
         status: installationForm.status || 'installed', // Use status from form, default to "installed"
         sku: skuTemplate.sku, // Keep the same SKU reference
       };
@@ -778,6 +985,39 @@ function AdminDashboard() {
     return client ? client.name : 'No Client';
   };
 
+  // Extract client_id from installation task notes or dispenser_id
+  const getClientIdFromInstallationTask = (task) => {
+    if (task.task_type === 'installation') {
+      // First, try to extract from notes
+      if (task.notes) {
+        const match = task.notes.match(/CLIENT_ID:([^|]+)/);
+        if (match) {
+          return match[1].trim();
+        }
+      }
+      // Fallback: try to extract from dispenser_id pattern (installation_client_client_1_timestamp)
+      if (task.dispenser_id && task.dispenser_id.startsWith('installation_client_')) {
+        // Pattern: installation_client_client_1_timestamp
+        // Extract: client_1 (the part after "installation_client_" and before the timestamp)
+        // The timestamp is typically a long number, so we extract until we hit a long number
+        const parts = task.dispenser_id.replace('installation_client_', '').split('_');
+        if (parts.length >= 2) {
+          // First part should be the client_id (e.g., "client_1" or new format like "YJMEKHAS9199")
+          const potentialClientId = parts[0];
+          // Check if it's a valid client ID format
+          if (potentialClientId.startsWith('client_') || potentialClientId.match(/^[A-Z0-9]{8,12}$/)) {
+            return potentialClientId;
+          }
+          // If first part is just "client", combine with second part
+          if (parts[0] === 'client' && parts[1]) {
+            return `${parts[0]}_${parts[1]}`;
+          }
+        }
+      }
+    }
+    return null;
+  };
+
   // eslint-disable-next-line no-unused-vars
   const getLevelColor = (current, capacity) => {
     const percentage = (current / capacity) * 100;
@@ -799,10 +1039,52 @@ function AdminDashboard() {
       >
         <Container maxWidth="xl" sx={{ mt: 0, mb: 4 }}>
 
+        {/* Technician View Selector */}
+        <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+          <FormControl sx={{ minWidth: 250 }}>
+            <InputLabel>View as Technician</InputLabel>
+            <Select
+              value={selectedTechnicianForView}
+              onChange={(e) => handleTechnicianViewChange(e.target.value)}
+              label="View as Technician"
+            >
+              <MenuItem value="">
+                <em>Admin View</em>
+              </MenuItem>
+              {users.filter(u => u.role === 'technician').map((tech) => (
+                <MenuItem key={tech.username} value={tech.username}>
+                  {tech.username}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          {technicianViewMode && (
+            <Chip 
+              label={`Viewing as: ${selectedTechnicianForView}`} 
+              color="primary" 
+              onDelete={() => handleTechnicianViewChange('')}
+              deleteIcon={<Close />}
+            />
+          )}
+        </Box>
+
         {loading ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
             <CircularProgress />
           </Box>
+        ) : technicianViewMode ? (
+          /* Technician View Mode */
+          <TechnicianView 
+            technicianUsername={selectedTechnicianForView}
+            assignments={technicianAssignments}
+            stats={technicianStats}
+            dispensers={dispensers}
+            clients={clients}
+            schedules={schedules}
+            refillLogs={refillLogs}
+            usageData={usageData}
+            onDataChange={loadData}
+          />
         ) : (
           <>
             {/* Dashboard Overview */}
@@ -1092,7 +1374,7 @@ function AdminDashboard() {
                                         >
                                           <TableCell sx={{ py: 1.5 }}>
                                             <Typography variant="body2">
-                                              {new Date(log.timestamp).toLocaleString()}
+                                              {formatDateTimeIST(log.timestamp)}
                                             </Typography>
                                           </TableCell>
                                           <TableCell sx={{ py: 1.5 }}>
@@ -1371,7 +1653,7 @@ function AdminDashboard() {
                     Manage client information and their installations
                   </Typography>
                 </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', mb: 3 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', mb: 3, gap: 2 }}>
                   <Button
                     variant="contained"
                     startIcon={<Add />}
@@ -1379,6 +1661,133 @@ function AdminDashboard() {
                     sx={{ textTransform: 'none', borderRadius: 1.5 }}
                   >
                     Add Client
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    startIcon={<Refresh />}
+                    onClick={async () => {
+                      // Sync all machines across all clients with their SKU templates
+                      const allClientMachines = dispensers.filter(d => d.client_id);
+                      const machinesToSync = [];
+                      const syncDetails = [];
+                      
+                      // Group by SKU for better reporting
+                      const skuGroups = {};
+                      
+                      for (const machine of allClientMachines) {
+                        // Find the SKU template
+                        const skuTemplate = dispensers.find(d => d.sku === machine.sku && !d.client_id);
+                        if (skuTemplate) {
+                          const needsMlPerHourUpdate = machine.ml_per_hour !== skuTemplate.ml_per_hour;
+                          const needsCapacityUpdate = machine.refill_capacity_ml !== skuTemplate.refill_capacity_ml;
+                          
+                          if (needsMlPerHourUpdate || needsCapacityUpdate) {
+                            machinesToSync.push({
+                              machine,
+                              skuTemplate,
+                              needsMlPerHourUpdate,
+                              needsCapacityUpdate
+                            });
+                            
+                            // Group by SKU for summary
+                            if (!skuGroups[machine.sku]) {
+                              skuGroups[machine.sku] = {
+                                sku: machine.sku,
+                                count: 0,
+                                mlPerHourChanges: [],
+                                capacityChanges: []
+                              };
+                            }
+                            skuGroups[machine.sku].count++;
+                            if (needsMlPerHourUpdate) {
+                              skuGroups[machine.sku].mlPerHourChanges.push({
+                                code: machine.unique_code,
+                                old: machine.ml_per_hour,
+                                new: skuTemplate.ml_per_hour
+                              });
+                            }
+                            if (needsCapacityUpdate) {
+                              skuGroups[machine.sku].capacityChanges.push({
+                                code: machine.unique_code,
+                                old: machine.refill_capacity_ml,
+                                new: skuTemplate.refill_capacity_ml
+                              });
+                            }
+                          }
+                        }
+                      }
+                      
+                      if (machinesToSync.length === 0) {
+                        alert('All machines are already in sync with their SKU templates.');
+                        return;
+                      }
+                      
+                      // Create summary message
+                      let summaryMessage = `Found ${machinesToSync.length} machine(s) across all clients that need to be synced:\n\n`;
+                      
+                      // Add summary by SKU
+                      Object.values(skuGroups).forEach(group => {
+                        summaryMessage += `${group.sku}: ${group.count} machine(s)\n`;
+                        if (group.mlPerHourChanges.length > 0) {
+                          const uniqueChanges = [...new Set(group.mlPerHourChanges.map(c => `${c.old} → ${c.new}`))];
+                          summaryMessage += `  - ML/hr updates: ${uniqueChanges.join(', ')}\n`;
+                        }
+                        if (group.capacityChanges.length > 0) {
+                          const uniqueChanges = [...new Set(group.capacityChanges.map(c => `${c.old} → ${c.new}`))];
+                          summaryMessage += `  - Capacity updates: ${uniqueChanges.join(', ')}\n`;
+                        }
+                        summaryMessage += '\n';
+                      });
+                      
+                      summaryMessage += 'Do you want to update all these machines to match their SKU template values?';
+                      
+                      const shouldSync = window.confirm(summaryMessage);
+                      
+                      if (shouldSync) {
+                        try {
+                          let successCount = 0;
+                          let errorCount = 0;
+                          
+                          for (const { machine, skuTemplate, needsMlPerHourUpdate, needsCapacityUpdate } of machinesToSync) {
+                            try {
+                              const updatedMachine = {
+                                ...machine,
+                                ml_per_hour: needsMlPerHourUpdate ? skuTemplate.ml_per_hour : machine.ml_per_hour,
+                                refill_capacity_ml: needsCapacityUpdate ? skuTemplate.refill_capacity_ml : machine.refill_capacity_ml,
+                              };
+                              await updateDispenser(machine.id, updatedMachine);
+                              
+                              // Recalculate usage if machine has a schedule
+                              if (machine.current_schedule_id) {
+                                try {
+                                  await calculateUsage(machine.id);
+                                } catch (err) {
+                                  console.error(`Error recalculating usage for ${machine.id}:`, err);
+                                }
+                              }
+                              
+                              successCount++;
+                            } catch (err) {
+                              console.error(`Error updating machine ${machine.id}:`, err);
+                              errorCount++;
+                            }
+                          }
+                          
+                          if (errorCount > 0) {
+                            alert(`Synced ${successCount} machine(s) successfully. ${errorCount} machine(s) failed to update.`);
+                          } else {
+                            alert(`Successfully synced ${successCount} machine(s) across all clients with their SKU templates.`);
+                          }
+                          
+                          loadData();
+                        } catch (err) {
+                          alert('Error syncing machines: ' + (err.response?.data?.detail || 'Unknown error'));
+                        }
+                      }
+                    }}
+                    sx={{ textTransform: 'none', borderRadius: 1.5 }}
+                  >
+                    Sync All Machines with SKU Templates
                   </Button>
                 </Box>
 
@@ -1627,24 +2036,32 @@ function AdminDashboard() {
                     Refresh
                   </Button>
                 </Box>
-                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-                  <Table>
+                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'auto', maxHeight: '80vh' }}>
+                  <Table stickyHeader>
                     <TableHead>
                       <TableRow sx={{ bgcolor: 'grey.50' }}>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Date & Time</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Machine</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>SKU Code</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>ML Per Hour</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Client</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Technician</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Amount (ml)</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Notes</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Refill ID</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 150 }}>Date & Time</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Fragrance Code</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Machine Code</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 150 }}>Machine Name</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>SKU</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Client</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 150 }}>Location</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Installation Date</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 100 }}>ML/Hr</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 100 }}>Refill #</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Level Before</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Adding ML</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Current ML</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Technician</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 200 }}>Notes</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {refillLogs.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={8} align="center" sx={{ py: 6 }}>
+                          <TableCell colSpan={16} align="center" sx={{ py: 6 }}>
                             <History sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
                             <Typography color="text.secondary" variant="body1">
                               No refill logs found
@@ -1656,6 +2073,7 @@ function AdminDashboard() {
                           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
                           .map((log, index) => {
                             const machine = dispensers.find((d) => d.id === log.dispenser_id);
+                            
                             return (
                               <TableRow 
                                 key={log.id} 
@@ -1665,17 +2083,57 @@ function AdminDashboard() {
                                   bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
                                 }}
                               >
-                                <TableCell sx={{ py: 2 }}>
+                                {/* Refill ID */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Typography variant="caption" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                    {log.id || '-'}
+                                  </Typography>
+                                </TableCell>
+                                
+                                {/* Date & Time */}
+                                <TableCell sx={{ py: 1.5 }}>
                                   <Typography variant="body2">
-                                    {new Date(log.timestamp).toLocaleString()}
+                                    {new Date(log.timestamp).toLocaleString('en-IN', {
+                                      day: '2-digit',
+                                      month: '2-digit',
+                                      year: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                
+                                {/* Fragrance Code */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  {log.fragrance_code ? (
+                                    <Chip 
+                                      label={log.fragrance_code} 
+                                      size="small" 
+                                      color="primary"
+                                      variant="outlined"
+                                      sx={{ fontWeight: 500 }}
+                                    />
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">-</Typography>
+                                  )}
+                                </TableCell>
+                                
+                                {/* Machine Unique Code */}
+                                <TableCell sx={{ py: 1.5 }}>
                                   <Typography variant="body2" fontWeight={500}>
-                                    {machine?.name || log.dispenser_id}
+                                    {log.machine_unique_code || machine?.unique_code || '-'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                
+                                {/* Machine Name */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Typography variant="body2" fontWeight={500}>
+                                    {machine?.name || log.dispenser_id || '-'}
+                                  </Typography>
+                                </TableCell>
+                                
+                                {/* SKU */}
+                                <TableCell sx={{ py: 1.5 }}>
                                   <Chip 
                                     label={machine?.sku || 'N/A'} 
                                     size="small" 
@@ -1683,33 +2141,94 @@ function AdminDashboard() {
                                     sx={{ fontWeight: 500 }}
                                   />
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                
+                                {/* Client */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Typography variant="body2" fontWeight={500}>
+                                    {log.client_id ? getClientName(log.client_id) : (machine?.client_id ? getClientName(machine.client_id) : '-')}
+                                  </Typography>
+                                </TableCell>
+                                
+                                {/* Location */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Typography variant="body2" color="text.secondary">
+                                    {log.location || machine?.location || '-'}
+                                  </Typography>
+                                </TableCell>
+                                
+                                {/* Installation Date */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Typography variant="body2">
+                                    {log.installation_date ? formatDateIST(log.installation_date) : (machine?.installation_date ? formatDateIST(machine.installation_date) : '-')}
+                                  </Typography>
+                                </TableCell>
+                                
+                                {/* ML Per Hour */}
+                                <TableCell sx={{ py: 1.5 }}>
                                   <Typography variant="body2" fontWeight={500}>
                                     {machine?.ml_per_hour
                                       ? `${machine.ml_per_hour} ml/hr`
                                       : 'N/A'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" fontWeight={500}>
-                                    {getClientName(machine?.client_id)}
-                                  </Typography>
-                                </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2">
-                                    {log.technician_username}
-                                  </Typography>
-                                </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                
+                                {/* Number of Refills Done */}
+                                <TableCell sx={{ py: 1.5 }}>
                                   <Chip 
-                                    label={`${log.refill_amount_ml} ml`} 
+                                    label={log.number_of_refills_done || '-'} 
                                     size="small" 
-                                    color="success"
-                                    sx={{ fontWeight: 500 }}
+                                    color="info"
+                                    sx={{ fontWeight: 600 }}
                                   />
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" color="text.secondary">
+                                
+                                {/* Level Before Refill */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  {log.level_before_refill !== undefined && log.level_before_refill !== null ? (
+                                    <Typography variant="body2" fontWeight={500} color="warning.main">
+                                      {log.level_before_refill.toFixed(1)} ml
+                                    </Typography>
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">-</Typography>
+                                  )}
+                                </TableCell>
+                                
+                                {/* Adding ML Refill */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Chip 
+                                    label={`+${log.refill_amount_ml?.toFixed(1) || 0} ml`} 
+                                    size="small" 
+                                    color="success"
+                                    sx={{ fontWeight: 600 }}
+                                  />
+                                </TableCell>
+                                
+                                {/* Current ML Refill */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  {log.current_ml_refill !== undefined && log.current_ml_refill !== null ? (
+                                    <Typography variant="body2" fontWeight={600} color="success.dark">
+                                      {log.current_ml_refill.toFixed(1)} ml
+                                    </Typography>
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">-</Typography>
+                                  )}
+                                </TableCell>
+                                
+                                {/* Technician */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Typography variant="body2" fontWeight={500}>
+                                    {log.technician_username || '-'}
+                                  </Typography>
+                                </TableCell>
+                                
+                                {/* Notes */}
+                                <TableCell sx={{ py: 1.5 }}>
+                                  <Typography variant="body2" color="text.secondary" sx={{ 
+                                    maxWidth: 200, 
+                                    overflow: 'hidden', 
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}>
                                     {log.notes || '-'}
                                   </Typography>
                                 </TableCell>
@@ -1860,6 +2379,7 @@ function AdminDashboard() {
                         <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Capacity (ml)</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Current Level (ml)</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Daily ML Usage</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Installation Date</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Last Refill Date</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Next Refill Date</TableCell>
                         <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Actions</TableCell>
@@ -1868,7 +2388,7 @@ function AdminDashboard() {
                     <TableBody>
                       {dispensers.filter(d => d.client_id).length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={13} align="center" sx={{ py: 6 }}>
+                          <TableCell colSpan={14} align="center" sx={{ py: 6 }}>
                             <Devices sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
                             <Typography color="text.secondary" variant="body1">
                               No installed machines. Click "Create New Installation" to add one.
@@ -1949,7 +2469,7 @@ function AdminDashboard() {
                         if (filteredDispensers.length === 0) {
                           return (
                             <TableRow>
-                              <TableCell colSpan={13} align="center" sx={{ py: 6 }}>
+                              <TableCell colSpan={14} align="center" sx={{ py: 6 }}>
                                 <Devices sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
                                 <Typography color="text.secondary" variant="body1">
                                   No machines match the selected filters.
@@ -2092,7 +2612,12 @@ function AdminDashboard() {
                                 </TableCell>
                                 <TableCell sx={{ py: 2 }}>
                                   <Typography variant="body2">
-                                    {lastRefill ? lastRefill.toLocaleDateString() : 'Never'}
+                                    {formatDateIST(dispenser.installation_date)}
+                                  </Typography>
+                                </TableCell>
+                                <TableCell sx={{ py: 2 }}>
+                                  <Typography variant="body2">
+                                    {formatDateIST(dispenser.last_refill_date)}
                                   </Typography>
                                 </TableCell>
                                 <TableCell sx={{ py: 2 }}>
@@ -2109,7 +2634,7 @@ function AdminDashboard() {
                                       return (
                                         <Box>
                                           <Typography variant="body2" color="error.main">
-                                            {nextRefillDate ? nextRefillDate.toLocaleDateString() : 'N/A'}
+                                            {nextRefillDate ? formatDateIST(nextRefillDate) : 'N/A'}
                                           </Typography>
                                           <Typography variant="caption" color="error.main">
                                             Overdue ({overdueDays.toFixed(1)} days ago)
@@ -2121,7 +2646,7 @@ function AdminDashboard() {
                                       return (
                                         <Box>
                                           <Typography variant="body2">
-                                            {nextRefillDate ? nextRefillDate.toLocaleDateString() : 'N/A'}
+                                            {nextRefillDate ? formatDateIST(nextRefillDate) : 'N/A'}
                                           </Typography>
                                           <Typography variant="caption" color="warning.main">
                                             Urgent ({daysUntilRefill.toFixed(1)} days)
@@ -2130,7 +2655,7 @@ function AdminDashboard() {
                                       );
                                     } else {
                                       // Normal
-                                      return nextRefillDate ? nextRefillDate.toLocaleDateString() : 'N/A';
+                                      return nextRefillDate ? formatDateIST(nextRefillDate) : 'N/A';
                                     }
                                   })()}
                                 </TableCell>
@@ -2211,6 +2736,521 @@ function AdminDashboard() {
                     </Box>
                   );
                 })()}
+              </Box>
+            )}
+
+            {/* Assign Technician View */}
+            {activeTab === 5 && (
+              <Box>
+                <Box sx={{ mb: 4 }}>
+                  <Typography variant="h4" component="h1" sx={{ fontWeight: 400, mb: 1, color: 'text.primary', fontSize: '2rem' }}>
+                    Assign Technician
+                  </Typography>
+                  <Typography variant="body1" color="text.secondary" sx={{ fontSize: '0.95rem' }}>
+                    Assign technicians to machines and manage service tasks
+                  </Typography>
+                </Box>
+
+                {/* Action Buttons */}
+                <Box sx={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', mb: 3, gap: 2 }}>
+                  <Button
+                    variant="contained"
+                    startIcon={<PlaylistAdd />}
+                    onClick={() => {
+                      setAssignTaskForm({
+                        client_id: '',
+                        service_type: 'refill',
+                        machine_codes: [],
+                        selected_machines: [],
+                        visit_date: '',
+                        technician_username: '',
+                        notes: '',
+                      });
+                      setAssignTaskDialogOpen(true);
+                    }}
+                    sx={{ textTransform: 'none', borderRadius: 1.5 }}
+                  >
+                    Assign Task
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    startIcon={<Refresh />}
+                    onClick={loadData}
+                    sx={{ textTransform: 'none', borderRadius: 1.5 }}
+                  >
+                    Refresh
+                  </Button>
+                </Box>
+
+                {/* Sub-Tabs */}
+                <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+                  <Tabs 
+                    value={assignTaskSubTab} 
+                    onChange={(e, newValue) => setAssignTaskSubTab(newValue)}
+                    sx={{ '& .MuiTab-root': { textTransform: 'none', fontWeight: 500 } }}
+                  >
+                    <Tab label="Machine List" icon={<Devices sx={{ fontSize: 18 }} />} iconPosition="start" />
+                    <Tab 
+                      label={`Assigned Tasks (${assignedTasks.length})`} 
+                      icon={<Assignment sx={{ fontSize: 18 }} />} 
+                      iconPosition="start" 
+                    />
+                  </Tabs>
+                </Box>
+
+                {/* Machine List Sub-Tab */}
+                {assignTaskSubTab === 0 && (
+                  <>
+                    <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
+                      <Table>
+                        <TableHead>
+                          <TableRow sx={{ bgcolor: 'grey.50' }}>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Client</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Location</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>SKU</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Unique Code</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Current Level</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Installation Date</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Last Refill Date</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Next Due Date</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Status</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Action</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {(() => {
+                            // Helper function to calculate next due date
+                            const calculateNextDueDate = (dispenser) => {
+                              const schedule = schedules.find(s => s.id === dispenser.current_schedule_id);
+                              const dailyUsage = usageData[dispenser.id]?.daily_usage_ml || 0;
+                              const lastRefill = dispenser.last_refill_date ? new Date(dispenser.last_refill_date) : null;
+                              
+                              if (!dailyUsage || dailyUsage === 0) return null;
+                              
+                              let currentLevel = dispenser.current_level_ml;
+                              if (lastRefill && dailyUsage > 0 && schedule) {
+                                const now = new Date();
+                                const timeDiffMs = now - lastRefill;
+                                const daysElapsed = timeDiffMs / (1000 * 60 * 60 * 24);
+                                const refillAmount = dispenser.current_level_ml > 0 
+                                  ? dispenser.current_level_ml 
+                                  : dispenser.refill_capacity_ml;
+                                const usageSinceRefill = daysElapsed * dailyUsage;
+                                currentLevel = Math.max(0, Math.min(refillAmount - usageSinceRefill, dispenser.refill_capacity_ml));
+                              }
+                              
+                              if (currentLevel <= 0) return new Date(); // Already due
+                              
+                              const daysUntilEmpty = currentLevel / dailyUsage;
+                              const daysUntilRefill = daysUntilEmpty - 2; // 2 days buffer
+                              
+                              const nextDate = new Date();
+                              nextDate.setDate(nextDate.getDate() + Math.round(daysUntilRefill));
+                              return nextDate;
+                            };
+
+                            const installedMachines = dispensers
+                              .filter(d => {
+                                if (!d.client_id) return false;
+                                if (d.status === 'assigned') return false;
+                                if (d.status === 'installed') return true;
+                                if (!d.status && d.location && d.location.trim() !== '') return true;
+                                return false;
+                              })
+                              .map(d => ({
+                                ...d,
+                                nextDueDate: calculateNextDueDate(d)
+                              }))
+                              .sort((a, b) => {
+                                // Sort by next due date ascending (earliest first, null last)
+                                if (!a.nextDueDate && !b.nextDueDate) return 0;
+                                if (!a.nextDueDate) return 1;
+                                if (!b.nextDueDate) return -1;
+                                return a.nextDueDate - b.nextDueDate;
+                              });
+
+                            if (installedMachines.length === 0) {
+                              return (
+                                <TableRow>
+                                  <TableCell colSpan={10} align="center" sx={{ py: 6 }}>
+                                    <Assignment sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
+                                    <Typography color="text.secondary" variant="body1">
+                                      No installed machines found
+                                    </Typography>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            }
+
+                            return installedMachines.map((dispenser, index) => {
+                              const schedule = schedules.find(s => s.id === dispenser.current_schedule_id);
+                              const dailyUsage = usageData[dispenser.id]?.daily_usage_ml || 0;
+                              const lastRefill = dispenser.last_refill_date ? new Date(dispenser.last_refill_date) : null;
+                              
+                              // Calculate current level based on refill logs and usage
+                              let currentLevel = dispenser.current_level_ml || 0;
+                              
+                              if (lastRefill && dailyUsage > 0 && schedule) {
+                                // Find the refill log that matches last_refill_date to get the level after refill
+                                const matchingRefillLog = refillLogs
+                                  .filter(log => {
+                                    if (log.dispenser_id !== dispenser.id) return false;
+                                    const logDate = new Date(log.timestamp);
+                                    const refillDate = new Date(dispenser.last_refill_date);
+                                    return Math.abs(logDate - refillDate) < 60000; // Within 1 minute
+                                  })
+                                  .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+                                
+                                // Use current_level_ml as the level immediately after the last refill
+                                // This is what the API sets it to: old_level + refill_amount (capped)
+                                const levelAfterRefill = dispenser.current_level_ml || dispenser.refill_capacity_ml || 0;
+                                
+                                const now = new Date();
+                                const timeDiffMs = now - lastRefill;
+                                const daysElapsed = timeDiffMs / (1000 * 60 * 60 * 24);
+                                const usageSinceRefill = daysElapsed * dailyUsage;
+                                
+                                // Current level = level after refill - usage since refill
+                                currentLevel = Math.max(0, Math.min(levelAfterRefill - usageSinceRefill, dispenser.refill_capacity_ml));
+                              } else {
+                                // If no schedule or last refill date, use stored current_level_ml
+                                currentLevel = dispenser.current_level_ml || 0;
+                              }
+
+                              const percentage = (currentLevel / dispenser.refill_capacity_ml) * 100;
+                              let urgencyStatus = 'good';
+                              let urgencyColor = 'success';
+                              if (percentage < 20) {
+                                urgencyStatus = 'critical';
+                                urgencyColor = 'error';
+                              } else if (percentage < 50) {
+                                urgencyStatus = 'medium';
+                                urgencyColor = 'warning';
+                              }
+
+                              // Calculate days until due
+                              const nextDueDate = dispenser.nextDueDate;
+                              let daysUntilDue = null;
+                              let dueStatus = 'normal';
+                              if (nextDueDate) {
+                                const now = new Date();
+                                daysUntilDue = Math.round((nextDueDate - now) / (1000 * 60 * 60 * 24));
+                                if (daysUntilDue < 0) dueStatus = 'overdue';
+                                else if (daysUntilDue <= 2) dueStatus = 'urgent';
+                                else if (daysUntilDue <= 5) dueStatus = 'soon';
+                              }
+
+                              return (
+                                <TableRow 
+                                  key={dispenser.id} 
+                                  hover
+                                  sx={{ 
+                                    '&:hover': { bgcolor: 'action.hover' },
+                                    bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
+                                  }}
+                                >
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Typography variant="body2" fontWeight={500}>
+                                      {getClientName(dispenser.client_id)}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Typography variant="body2">
+                                      {dispenser.location || '-'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Chip 
+                                      label={dispenser.sku || 'N/A'} 
+                                      size="small" 
+                                      variant="outlined"
+                                      sx={{ fontWeight: 500 }}
+                                    />
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Typography variant="body2" fontWeight={500}>
+                                      {dispenser.unique_code || '-'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Box>
+                                      <Typography variant="body2" fontWeight={500}>
+                                        {currentLevel.toFixed(1)} / {dispenser.refill_capacity_ml} ml
+                                      </Typography>
+                                      <LinearProgress
+                                        variant="determinate"
+                                        value={percentage}
+                                        color={urgencyColor}
+                                        sx={{ height: 6, borderRadius: 1, mt: 0.5 }}
+                                      />
+                                    </Box>
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Typography variant="body2">
+                                      {dispenser.installation_date 
+                                        ? new Date(dispenser.installation_date).toLocaleDateString() 
+                                        : 'N/A'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Typography variant="body2">
+                                      {formatDateIST(dispenser.last_refill_date)}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    {nextDueDate ? (
+                                      <Box>
+                                        <Typography 
+                                          variant="body2" 
+                                          fontWeight={500}
+                                          color={dueStatus === 'overdue' ? 'error.main' : dueStatus === 'urgent' ? 'warning.main' : 'text.primary'}
+                                        >
+                                          {formatDateIST(nextDueDate)}
+                                        </Typography>
+                                        <Chip
+                                          label={
+                                            dueStatus === 'overdue' ? `${Math.abs(daysUntilDue)} days overdue` :
+                                            daysUntilDue === 0 ? 'Due today' :
+                                            `${daysUntilDue} days`
+                                          }
+                                          size="small"
+                                          color={
+                                            dueStatus === 'overdue' ? 'error' :
+                                            dueStatus === 'urgent' ? 'warning' :
+                                            dueStatus === 'soon' ? 'info' : 'default'
+                                          }
+                                          variant="outlined"
+                                          sx={{ mt: 0.5 }}
+                                        />
+                                      </Box>
+                                    ) : (
+                                      <Typography variant="body2" color="text.secondary">N/A</Typography>
+                                    )}
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Chip
+                                      label={urgencyStatus.charAt(0).toUpperCase() + urgencyStatus.slice(1)}
+                                      size="small"
+                                      color={urgencyColor}
+                                      sx={{ fontWeight: 500 }}
+                                    />
+                                  </TableCell>
+                                  <TableCell sx={{ py: 2 }}>
+                                    <Button
+                                      variant="contained"
+                                      size="small"
+                                      startIcon={<PersonAdd />}
+                                      onClick={() => {
+                                        setSelectedMachineForAssignment(dispenser);
+                                        setSelectedTechnician('');
+                                        setAssignVisitDate('');
+                                        setAssignServiceType('refill');
+                                        setAssignTechnicianDialogOpen(true);
+                                      }}
+                                      sx={{ textTransform: 'none', borderRadius: 1.5 }}
+                                    >
+                                      Assign
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            });
+                          })()}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+
+                    <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-start', alignItems: 'center' }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
+                        Showing <strong>{dispensers.filter(d => {
+                          if (!d.client_id) return false;
+                          if (d.status === 'assigned') return false;
+                          if (d.status === 'installed') return true;
+                          if (!d.status && d.location && d.location.trim() !== '') return true;
+                          return false;
+                        }).length}</strong> installed machines (sorted by next due date)
+                      </Typography>
+                    </Box>
+                  </>
+                )}
+
+                {/* Assigned Tasks Sub-Tab */}
+                {assignTaskSubTab === 1 && (
+                  <>
+                    <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
+                      <Table>
+                        <TableHead>
+                          <TableRow sx={{ bgcolor: 'grey.50' }}>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Client</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Location</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Machine Code</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>SKU</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Service Type</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Technician</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Assigned By</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Assigned Date</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Visit Date</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Status</TableCell>
+                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {assignedTasks.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={11} align="center" sx={{ py: 6 }}>
+                                <Assignment sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
+                                <Typography color="text.secondary" variant="body1">
+                                  No tasks assigned yet
+                                </Typography>
+                                <Typography color="text.secondary" variant="body2" sx={{ mt: 1 }}>
+                                  Click "Assign Task" to create a new task
+                                </Typography>
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            assignedTasks
+                              .sort((a, b) => new Date(b.assigned_date) - new Date(a.assigned_date))
+                              .map((task, index) => {
+                                const dispenser = dispensers.find(d => d.id === task.dispenser_id);
+                                const installationClientId = task.task_type === 'installation' 
+                                  ? getClientIdFromInstallationTask(task) 
+                                  : null;
+                                const clientId = installationClientId || dispenser?.client_id;
+                                const isInstallation = task.task_type === 'installation';
+                                return (
+                                  <TableRow 
+                                    key={task.id}
+                                    hover
+                                    sx={{ 
+                                      '&:hover': { bgcolor: 'action.hover' },
+                                      bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
+                                    }}
+                                  >
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Typography variant="body2" fontWeight={500}>
+                                        {getClientName(clientId)}
+                                      </Typography>
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Typography variant="body2">
+                                        {isInstallation ? 'Installation Task' : (dispenser?.location || '-')}
+                                      </Typography>
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Typography variant="body2" fontWeight={500}>
+                                        {isInstallation ? '-' : (dispenser?.unique_code || '-')}
+                                      </Typography>
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Chip 
+                                        label={isInstallation ? 'N/A' : (dispenser?.sku || 'N/A')} 
+                                        size="small" 
+                                        variant="outlined"
+                                      />
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Chip 
+                                        label={task.task_type?.charAt(0).toUpperCase() + task.task_type?.slice(1) || 'Refill'}
+                                        size="small"
+                                        color={
+                                          task.task_type === 'maintenance' ? 'secondary' :
+                                          task.task_type === 'installation' ? 'info' :
+                                          task.task_type === 'discontinue' ? 'error' : 'primary'
+                                        }
+                                        icon={
+                                          task.task_type === 'maintenance' ? <Build sx={{ fontSize: 14 }} /> :
+                                          task.task_type === 'discontinue' ? <Cancel sx={{ fontSize: 14 }} /> : undefined
+                                        }
+                                      />
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <People sx={{ fontSize: 16, color: 'primary.main' }} />
+                                        <Typography variant="body2">
+                                          {task.technician_username || '-'}
+                                        </Typography>
+                                      </Box>
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Typography variant="body2">
+                                        {task.assigned_by || '-'}
+                                      </Typography>
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Typography variant="body2">
+                                        {formatDateIST(task.assigned_date)}
+                                      </Typography>
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <EventNote sx={{ fontSize: 16, color: 'info.main' }} />
+                                        <Typography variant="body2">
+                                          {formatDateIST(task.visit_date)}
+                                        </Typography>
+                                      </Box>
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Chip 
+                                        label={
+                                          task.status === 'completed' ? 'Completed' :
+                                          task.status === 'assigned' ? 'Assigned & Pending' :
+                                          task.status === 'cancelled' ? 'Cancelled' : 'Pending'
+                                        }
+                                        size="small"
+                                        color={
+                                          task.status === 'completed' ? 'success' :
+                                          task.status === 'assigned' ? 'info' :
+                                          task.status === 'cancelled' ? 'error' : 'warning'
+                                        }
+                                      />
+                                    </TableCell>
+                                    <TableCell sx={{ py: 2 }}>
+                                      <Box sx={{ display: 'flex', gap: 1 }}>
+                                        <IconButton
+                                          size="small"
+                                          color="primary"
+                                          onClick={() => {
+                                            setEditingTask(task);
+                                            setEditTaskForm({
+                                              technician_username: task.technician_username || '',
+                                              visit_date: task.visit_date ? task.visit_date.split('T')[0] : '',
+                                              task_type: task.task_type || 'refill',
+                                              status: task.status || 'pending',
+                                              notes: task.notes || '',
+                                            });
+                                          }}
+                                          sx={{ '&:hover': { bgcolor: 'primary.lighter' } }}
+                                        >
+                                          <Edit fontSize="small" />
+                                        </IconButton>
+                                        <IconButton
+                                          size="small"
+                                          color="error"
+                                          onClick={() => {
+                                            setTaskToDelete(task);
+                                            setDeleteTaskDialogOpen(true);
+                                          }}
+                                          sx={{ '&:hover': { bgcolor: 'error.lighter' } }}
+                                        >
+                                          <Delete fontSize="small" />
+                                        </IconButton>
+                                      </Box>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })
+                          )}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+
+                    <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-start', alignItems: 'center' }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
+                        Showing <strong>{assignedTasks.length}</strong> assigned tasks
+                      </Typography>
+                    </Box>
+                  </>
+                )}
               </Box>
             )}
           </>
@@ -2420,64 +3460,76 @@ function AdminDashboard() {
             required
           />
 
-          <FormControl fullWidth margin="normal" required>
-            <Select
+          {/* SKU Field - Show as read-only TextField when editing, Select when creating new */}
+          {editingInstallation ? (
+            <TextField
+              fullWidth
+              label="Machine SKU"
               value={installationForm.sku || ''}
-              onChange={(e) => {
-                const selectedSku = e.target.value;
-                // Find the SKU template from Machines tab (without client_id) to get capacity and ml_per_hour
-                const skuTemplate = dispensers.find(d => d.sku === selectedSku && !d.client_id);
-                
-                // Find client assets (machines) for this client with this SKU
-                const clientAssets = installationForm.client_id && selectedSku
-                  ? dispensers.filter(d => 
-                      d.client_id === installationForm.client_id && 
-                      d.sku === selectedSku &&
-                      d.unique_code &&
-                      d.unique_code.trim() !== ''
+              margin="normal"
+              disabled
+              helperText="SKU cannot be changed after installation"
+            />
+          ) : (
+            <FormControl fullWidth margin="normal" required>
+              <Select
+                value={installationForm.sku || ''}
+                onChange={(e) => {
+                  const selectedSku = e.target.value;
+                  // Find the SKU template from Machines tab (without client_id) to get capacity and ml_per_hour
+                  const skuTemplate = dispensers.find(d => d.sku === selectedSku && !d.client_id);
+                  
+                  // Find client assets (machines) for this client with this SKU
+                  const clientAssets = installationForm.client_id && selectedSku
+                    ? dispensers.filter(d => 
+                        d.client_id === installationForm.client_id && 
+                        d.sku === selectedSku &&
+                        d.unique_code &&
+                        d.unique_code.trim() !== ''
+                      )
+                    : [];
+                  
+                  // Auto-select unique code if only one asset found, and auto-fill location
+                  let autoSelectedUniqueCode = '';
+                  let autoFilledLocation = installationForm.location || '';
+                  if (clientAssets.length === 1) {
+                    autoSelectedUniqueCode = clientAssets[0].unique_code || '';
+                    autoFilledLocation = clientAssets[0].location || '';
+                  }
+                  
+                  setInstallationForm({
+                    ...installationForm,
+                    sku: selectedSku,
+                    unique_code: autoSelectedUniqueCode,
+                    location: autoFilledLocation, // Auto-fill location when unique code is auto-selected
+                    ml_per_hour: '', // Will be auto-filled when schedule is selected
+                    refill_amount_ml: skuTemplate?.refill_capacity_ml || 0,
+                    calculated_current_level: skuTemplate?.refill_capacity_ml || 0,
+                  });
+                }}
+                displayEmpty
+                disabled={!installationForm.client_id}
+              >
+                <MenuItem value="">Select Machine SKU</MenuItem>
+                {installationForm.client_id ? (
+                  // Only show SKUs from machines assigned to the selected client (status "assigned" or missing)
+                  [...new Set(dispensers
+                    .filter(d => 
+                      d.client_id === installationForm.client_id &&
+                      (d.status === 'assigned' || !d.status || d.status === null || d.status === undefined || d.status === '')
                     )
-                  : [];
-                
-                // Auto-select unique code if only one asset found, and auto-fill location
-                let autoSelectedUniqueCode = '';
-                let autoFilledLocation = installationForm.location || '';
-                if (clientAssets.length === 1) {
-                  autoSelectedUniqueCode = clientAssets[0].unique_code || '';
-                  autoFilledLocation = clientAssets[0].location || '';
-                }
-                
-                setInstallationForm({
-                  ...installationForm,
-                  sku: selectedSku,
-                  unique_code: autoSelectedUniqueCode,
-                  location: autoFilledLocation, // Auto-fill location when unique code is auto-selected
-                  ml_per_hour: '', // Will be auto-filled when schedule is selected
-                  refill_amount_ml: skuTemplate?.refill_capacity_ml || 0,
-                  calculated_current_level: skuTemplate?.refill_capacity_ml || 0,
-                });
-              }}
-              displayEmpty
-              disabled={!installationForm.client_id}
-            >
-              <MenuItem value="">Select Machine SKU</MenuItem>
-              {installationForm.client_id ? (
-                // Only show SKUs from machines assigned to the selected client (status "assigned" or missing)
-                [...new Set(dispensers
-                  .filter(d => 
-                    d.client_id === installationForm.client_id &&
-                    (d.status === 'assigned' || !d.status || d.status === null || d.status === undefined || d.status === '')
-                  )
-                  .map(d => d.sku)
-                )].map((sku) => (
-                  <MenuItem key={sku} value={sku}>
-                    {sku}
-                  </MenuItem>
-                ))
-              ) : (
-                <MenuItem value="" disabled>Select a client first</MenuItem>
-              )}
-            </Select>
-          </FormControl>
+                    .map(d => d.sku)
+                  )].map((sku) => (
+                    <MenuItem key={sku} value={sku}>
+                      {sku}
+                    </MenuItem>
+                  ))
+                ) : (
+                  <MenuItem value="" disabled>Select a client first</MenuItem>
+                )}
+              </Select>
+            </FormControl>
+          )}
 
           {/* Unique Code Field - Show when client and SKU are selected */}
           {installationForm.client_id && installationForm.sku && (() => {
@@ -2698,11 +3750,29 @@ function AdminDashboard() {
 
           <TextField
             fullWidth
-            label="Last Refill Date & Time"
+            label="Installation Date (IST)"
             type="datetime-local"
-            value={installationForm.last_refill_date ? new Date(installationForm.last_refill_date).toISOString().slice(0, 16) : ''}
+            value={toISTDateTimeLocal(installationForm.installation_date)}
             onChange={(e) => {
-              const dateTime = e.target.value ? new Date(e.target.value).toISOString() : null;
+              const dateTime = fromISTDateTimeLocal(e.target.value);
+              setInstallationForm({ 
+                ...installationForm, 
+                installation_date: dateTime
+              });
+            }}
+            margin="normal"
+            InputLabelProps={{ shrink: true }}
+            helperText="Date and time when the machine was installed (IST)"
+            required
+          />
+
+          <TextField
+            fullWidth
+            label="Last Refill Date & Time (IST)"
+            type="datetime-local"
+            value={toISTDateTimeLocal(installationForm.last_refill_date)}
+            onChange={(e) => {
+              const dateTime = fromISTDateTimeLocal(e.target.value);
               // Get SKU template from Machines tab (without client_id)
               const skuTemplate = dispensers.find(d => d.sku === installationForm.sku && !d.client_id);
               const refillAmount = parseFloat(installationForm.refill_amount_ml) || skuTemplate?.refill_capacity_ml || 0;
@@ -2723,7 +3793,7 @@ function AdminDashboard() {
             }}
             margin="normal"
             InputLabelProps={{ shrink: true }}
-            helperText="Date and time when the machine was last refilled"
+            helperText="Date and time when the machine was last refilled (IST)"
           />
 
           <TextField
@@ -2823,9 +3893,9 @@ function AdminDashboard() {
             fullWidth
             label="Installation Date"
             type="date"
-            value={addMachineToClientForm.installation_date ? new Date(addMachineToClientForm.installation_date).toISOString().slice(0, 10) : ''}
+            value={toISTDateLocal(addMachineToClientForm.installation_date)}
             onChange={(e) => {
-              const date = e.target.value ? new Date(e.target.value).toISOString() : null;
+              const date = fromISTDateLocal(e.target.value);
               setAddMachineToClientForm({ ...addMachineToClientForm, installation_date: date });
             }}
             margin="normal"
@@ -2921,6 +3991,84 @@ function AdminDashboard() {
                     <Typography variant="h6" sx={{ fontWeight: 500, color: 'text.primary' }}>
                       Assigned Machines ({clientAssets.length})
                     </Typography>
+                    {clientAssets.length > 0 && (
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<Refresh />}
+                        onClick={async () => {
+                          // Sync all machines to match their SKU templates
+                          const machinesToSync = [];
+                          const syncDetails = [];
+                          
+                          for (const machine of clientAssets) {
+                            // Find the SKU template
+                            const skuTemplate = dispensers.find(d => d.sku === machine.sku && !d.client_id);
+                            if (skuTemplate) {
+                              const needsMlPerHourUpdate = machine.ml_per_hour !== skuTemplate.ml_per_hour;
+                              const needsCapacityUpdate = machine.refill_capacity_ml !== skuTemplate.refill_capacity_ml;
+                              
+                              if (needsMlPerHourUpdate || needsCapacityUpdate) {
+                                machinesToSync.push({
+                                  machine,
+                                  skuTemplate,
+                                  needsMlPerHourUpdate,
+                                  needsCapacityUpdate
+                                });
+                                
+                                syncDetails.push(
+                                  `• ${machine.unique_code}: ` +
+                                  `${needsMlPerHourUpdate ? `ML/hr: ${machine.ml_per_hour} → ${skuTemplate.ml_per_hour}` : ''}` +
+                                  `${needsMlPerHourUpdate && needsCapacityUpdate ? ', ' : ''}` +
+                                  `${needsCapacityUpdate ? `Capacity: ${machine.refill_capacity_ml} → ${skuTemplate.refill_capacity_ml}` : ''}`
+                                );
+                              }
+                            }
+                          }
+                          
+                          if (machinesToSync.length === 0) {
+                            alert('All machines are already in sync with their SKU templates.');
+                            return;
+                          }
+                          
+                          const shouldSync = window.confirm(
+                            `Found ${machinesToSync.length} machine(s) that need to be synced with their SKU templates:\n\n` +
+                            syncDetails.join('\n') +
+                            `\n\nDo you want to update these machines to match their SKU template values?`
+                          );
+                          
+                          if (shouldSync) {
+                            try {
+                              const updatePromises = machinesToSync.map(async ({ machine, skuTemplate, needsMlPerHourUpdate, needsCapacityUpdate }) => {
+                                const updatedMachine = {
+                                  ...machine,
+                                  ml_per_hour: needsMlPerHourUpdate ? skuTemplate.ml_per_hour : machine.ml_per_hour,
+                                  refill_capacity_ml: needsCapacityUpdate ? skuTemplate.refill_capacity_ml : machine.refill_capacity_ml,
+                                };
+                                await updateDispenser(machine.id, updatedMachine);
+                                
+                                // Recalculate usage if machine has a schedule
+                                if (machine.current_schedule_id) {
+                                  try {
+                                    await calculateUsage(machine.id);
+                                  } catch (err) {
+                                    console.error(`Error recalculating usage for ${machine.id}:`, err);
+                                  }
+                                }
+                              });
+                              
+                              await Promise.all(updatePromises);
+                              alert(`Successfully synced ${machinesToSync.length} machine(s) with their SKU templates.`);
+                              loadData();
+                            } catch (err) {
+                              alert('Error syncing machines: ' + (err.response?.data?.detail || 'Unknown error'));
+                            }
+                          }
+                        }}
+                      >
+                        Sync with SKU Templates
+                      </Button>
+                    )}
                   </Box>
                   
                   {clientAssets.length === 0 ? (
@@ -3037,6 +4185,721 @@ function AdminDashboard() {
         <DialogActions>
           <Button onClick={() => setViewClientDialogOpen(false)} variant="contained">
             Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Assign Technician Dialog */}
+      <Dialog open={assignTechnicianDialogOpen} onClose={() => setAssignTechnicianDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <PersonAdd sx={{ color: 'primary.main' }} />
+            <Typography variant="h6">Assign Technician</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {selectedMachineForAssignment && (
+            <Box>
+              {/* Machine Details */}
+              <Box sx={{ mb: 3, p: 2, bgcolor: 'grey.50', borderRadius: 1.5 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600, color: 'text.primary' }}>
+                  Machine Details
+                </Typography>
+                <Grid container spacing={2}>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" color="text.secondary">Client</Typography>
+                    <Typography variant="body2" fontWeight={500}>{getClientName(selectedMachineForAssignment.client_id)}</Typography>
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" color="text.secondary">Location</Typography>
+                    <Typography variant="body2" fontWeight={500}>{selectedMachineForAssignment.location || '-'}</Typography>
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" color="text.secondary">SKU</Typography>
+                    <Typography variant="body2" fontWeight={500}>{selectedMachineForAssignment.sku || '-'}</Typography>
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" color="text.secondary">Unique Code</Typography>
+                    <Typography variant="body2" fontWeight={500}>{selectedMachineForAssignment.unique_code || '-'}</Typography>
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" color="text.secondary">Current Level</Typography>
+                    <Typography variant="body2" fontWeight={500}>
+                      {selectedMachineForAssignment.current_level_ml?.toFixed(1) || 0} / {selectedMachineForAssignment.refill_capacity_ml} ml
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" color="text.secondary">Last Refill</Typography>
+                    <Typography variant="body2" fontWeight={500}>
+                      {selectedMachineForAssignment.last_refill_date 
+                        ? formatDateIST(selectedMachineForAssignment.last_refill_date) 
+                        : 'Never'}
+                    </Typography>
+                  </Grid>
+                </Grid>
+              </Box>
+
+              {/* Service Type Selection */}
+              <FormControl fullWidth margin="normal" required>
+                <InputLabel>Service Type</InputLabel>
+                <Select
+                  value={assignServiceType}
+                  onChange={(e) => setAssignServiceType(e.target.value)}
+                  label="Service Type"
+                >
+                  <MenuItem value="refill">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Refresh sx={{ fontSize: 18, color: 'primary.main' }} />
+                      <Typography>Refill</Typography>
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="maintenance">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Build sx={{ fontSize: 18, color: 'secondary.main' }} />
+                      <Typography>Maintenance</Typography>
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="installation">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Add sx={{ fontSize: 18, color: 'info.main' }} />
+                      <Typography>Installation</Typography>
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="discontinue">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Cancel sx={{ fontSize: 18, color: 'error.main' }} />
+                      <Typography>Discontinue</Typography>
+                    </Box>
+                  </MenuItem>
+                </Select>
+              </FormControl>
+
+              {/* Visit Date Selection */}
+              <TextField
+                fullWidth
+                type="date"
+                label="Visit Date"
+                value={assignVisitDate}
+                onChange={(e) => setAssignVisitDate(e.target.value)}
+                margin="normal"
+                required
+                InputLabelProps={{ shrink: true }}
+                helperText="Select the scheduled visit date for this task"
+              />
+
+              {/* Technician Selection with visit count */}
+              <FormControl fullWidth margin="normal" required>
+                <InputLabel>Select Technician</InputLabel>
+                <Select
+                  value={selectedTechnician}
+                  onChange={(e) => setSelectedTechnician(e.target.value)}
+                  label="Select Technician"
+                >
+                  <MenuItem value="">Select a Technician</MenuItem>
+                  {users
+                    .filter(u => u.role === 'technician')
+                    .map((technician) => {
+                      // Count visits for this technician on the selected date
+                      const selectedDateStr = assignVisitDate;
+                      const visitsOnDate = assignedTasks.filter(task => {
+                        if (task.technician_username !== technician.username) return false;
+                        if (!task.visit_date) return false;
+                        const taskDate = task.visit_date.split('T')[0];
+                        return taskDate === selectedDateStr;
+                      });
+                      const visitCount = visitsOnDate.length;
+                      
+                      // Get client names for visits
+                      const clientNames = visitsOnDate.map(task => {
+                        const taskDispenser = dispensers.find(d => d.id === task.dispenser_id);
+                        return getClientName(taskDispenser?.client_id);
+                      }).filter(Boolean);
+                      const uniqueClientNames = [...new Set(clientNames)];
+                      
+                      return (
+                        <MenuItem key={technician.username} value={technician.username}>
+                          <Box sx={{ width: '100%' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <People sx={{ fontSize: 18, color: 'primary.main' }} />
+                                <Typography fontWeight={500}>{technician.username}</Typography>
+                              </Box>
+                              {assignVisitDate && (
+                                <Chip 
+                                  label={`${visitCount} visit${visitCount !== 1 ? 's' : ''}`}
+                                  size="small"
+                                  color={visitCount === 0 ? 'success' : visitCount < 3 ? 'warning' : 'error'}
+                                  variant="outlined"
+                                  sx={{ ml: 2 }}
+                                />
+                              )}
+                            </Box>
+                            {assignVisitDate && visitCount > 0 && (
+                              <Box sx={{ mt: 0.5, pl: 3.5 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  Clients: {uniqueClientNames.join(', ')}
+                                </Typography>
+                              </Box>
+                            )}
+                          </Box>
+                        </MenuItem>
+                      );
+                    })}
+                </Select>
+              </FormControl>
+
+              {/* Show scheduled visits for selected technician on selected date */}
+              {selectedTechnician && assignVisitDate && (() => {
+                const visitsOnDate = assignedTasks.filter(task => {
+                  if (task.technician_username !== selectedTechnician) return false;
+                  if (!task.visit_date) return false;
+                  const taskDate = task.visit_date.split('T')[0];
+                  return taskDate === assignVisitDate;
+                });
+                
+                if (visitsOnDate.length > 0) {
+                  return (
+                    <Box sx={{ mt: 2, p: 2, bgcolor: 'info.light', borderRadius: 1.5 }}>
+                      <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: 'info.dark' }}>
+                        Scheduled Visits on {formatDateIST(assignVisitDate)} ({visitsOnDate.length})
+                      </Typography>
+                      {visitsOnDate.map((visit, idx) => {
+                        const visitDispenser = dispensers.find(d => d.id === visit.dispenser_id);
+                        return (
+                          <Box key={idx} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                            <Chip 
+                              label={visit.task_type} 
+                              size="small" 
+                              color={visit.task_type === 'refill' ? 'primary' : 'secondary'}
+                              sx={{ minWidth: 80 }}
+                            />
+                            <Typography variant="body2">
+                              {getClientName(visitDispenser?.client_id)} - {visitDispenser?.location || 'N/A'}
+                            </Typography>
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  );
+                }
+                return null;
+              })()}
+
+              {users.filter(u => u.role === 'technician').length === 0 && (
+                <Box sx={{ mt: 2, p: 2, bgcolor: 'warning.light', borderRadius: 1.5 }}>
+                  <Typography variant="body2" color="warning.dark">
+                    No technicians found. Please add technician users in the Users tab first.
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAssignTechnicianDialogOpen(false)}>Cancel</Button>
+          <Button
+            onClick={async () => {
+              if (selectedTechnician && selectedMachineForAssignment && assignVisitDate) {
+                try {
+                  await createTechnicianAssignment({
+                    dispenser_id: selectedMachineForAssignment.id,
+                    technician_username: selectedTechnician,
+                    assigned_by: user?.username || 'admin',
+                    assigned_date: getCurrentISTISO(),
+                    visit_date: new Date(assignVisitDate).toISOString(),
+                    status: 'assigned',
+                    task_type: assignServiceType,
+                    notes: null,
+                  });
+                  alert(`Technician "${selectedTechnician}" has been assigned to machine at "${selectedMachineForAssignment.location}" (${selectedMachineForAssignment.unique_code || selectedMachineForAssignment.sku}) for ${assignVisitDate}.`);
+                  setAssignTechnicianDialogOpen(false);
+                  setSelectedMachineForAssignment(null);
+                  setSelectedTechnician('');
+                  setAssignVisitDate('');
+                  setAssignServiceType('refill');
+                  loadData(); // Refresh data
+                } catch (err) {
+                  alert('Error assigning technician: ' + (err.response?.data?.detail || 'Unknown error'));
+                }
+              }
+            }}
+            variant="contained"
+            disabled={!selectedTechnician || !assignVisitDate}
+            startIcon={<PersonAdd />}
+          >
+            Assign Technician
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Assign Task Dialog */}
+      <Dialog open={assignTaskDialogOpen} onClose={() => setAssignTaskDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <PlaylistAdd sx={{ color: 'primary.main' }} />
+            <Typography variant="h6">Assign Task</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ mt: 1 }}>
+            {/* Select Client */}
+            <FormControl fullWidth margin="normal" required>
+              <InputLabel>Select Client</InputLabel>
+              <Select
+                value={assignTaskForm.client_id}
+                onChange={(e) => {
+                  setAssignTaskForm({
+                    ...assignTaskForm,
+                    client_id: e.target.value,
+                    machine_codes: [],
+                    selected_machines: [],
+                  });
+                }}
+                label="Select Client"
+              >
+                <MenuItem value="">Select a Client</MenuItem>
+                {clients.map((client) => (
+                  <MenuItem key={client.id} value={client.id}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Business sx={{ fontSize: 18, color: 'primary.main' }} />
+                      <Typography>{client.name}</Typography>
+                    </Box>
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            {/* Select Service Type */}
+            <FormControl fullWidth margin="normal" required>
+              <InputLabel>Service Type</InputLabel>
+              <Select
+                value={assignTaskForm.service_type}
+                onChange={(e) => setAssignTaskForm({ ...assignTaskForm, service_type: e.target.value })}
+                label="Service Type"
+              >
+                <MenuItem value="refill">
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Refresh sx={{ fontSize: 18, color: 'primary.main' }} />
+                    <Typography>Refill</Typography>
+                  </Box>
+                </MenuItem>
+                <MenuItem value="maintenance">
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Build sx={{ fontSize: 18, color: 'secondary.main' }} />
+                    <Typography>Maintenance</Typography>
+                  </Box>
+                </MenuItem>
+                <MenuItem value="installation">
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Add sx={{ fontSize: 18, color: 'info.main' }} />
+                    <Typography>Installation</Typography>
+                  </Box>
+                </MenuItem>
+                <MenuItem value="discontinue">
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Cancel sx={{ fontSize: 18, color: 'error.main' }} />
+                    <Typography>Discontinue</Typography>
+                  </Box>
+                </MenuItem>
+              </Select>
+            </FormControl>
+
+            {/* Select Machine Codes (Multiple) - Not required for installation tasks */}
+            {assignTaskForm.client_id && assignTaskForm.service_type !== 'installation' && (
+              <FormControl fullWidth margin="normal" required>
+                <InputLabel>Select Machine Code(s)</InputLabel>
+                <Select
+                  multiple
+                  value={assignTaskForm.machine_codes}
+                  onChange={(e) => {
+                    const selectedCodes = e.target.value;
+                    // Get machine details for selected codes
+                    const clientMachines = dispensers.filter(d => 
+                      d.client_id === assignTaskForm.client_id && 
+                      (d.status === 'installed' || (!d.status && d.location))
+                    );
+                    const selectedMachines = clientMachines
+                      .filter(m => selectedCodes.includes(m.unique_code))
+                      .map(m => ({
+                        id: m.id,
+                        code: m.unique_code,
+                        location: m.location,
+                        sku: m.sku,
+                      }));
+                    setAssignTaskForm({
+                      ...assignTaskForm,
+                      machine_codes: selectedCodes,
+                      selected_machines: selectedMachines,
+                    });
+                  }}
+                  input={<OutlinedInput label="Select Machine Code(s)" />}
+                  renderValue={(selected) => (
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                      {selected.map((code) => (
+                        <Chip key={code} label={code} size="small" />
+                      ))}
+                    </Box>
+                  )}
+                >
+                  {dispensers
+                    .filter(d => 
+                      d.client_id === assignTaskForm.client_id && 
+                      d.unique_code &&
+                      (d.status === 'installed' || (!d.status && d.location))
+                    )
+                    .map((machine) => (
+                      <MenuItem key={machine.id} value={machine.unique_code}>
+                        <Checkbox checked={assignTaskForm.machine_codes.indexOf(machine.unique_code) > -1} />
+                        <ListItemText 
+                          primary={machine.unique_code} 
+                          secondary={`${machine.sku} - ${machine.location || 'No Location'}`}
+                        />
+                      </MenuItem>
+                    ))}
+                </Select>
+              </FormControl>
+            )}
+
+            {/* Info message for installation tasks */}
+            {assignTaskForm.client_id && assignTaskForm.service_type === 'installation' && (
+              <Box sx={{ mt: 2, p: 2, bgcolor: 'info.light', borderRadius: 1.5 }}>
+                <Typography variant="body2" color="info.dark">
+                  <strong>Installation Task:</strong> No machine code selection required. The technician will have access to the client's information and can manage installations.
+                </Typography>
+              </Box>
+            )}
+
+            {/* Selected Machines Details */}
+            {assignTaskForm.selected_machines.length > 0 && (
+              <Box sx={{ mt: 2, mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+                  Selected Machines ({assignTaskForm.selected_machines.length})
+                </Typography>
+                <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 1.5 }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow sx={{ bgcolor: 'grey.50' }}>
+                        <TableCell sx={{ fontWeight: 600 }}>Machine Code</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Location</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>SKU</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {assignTaskForm.selected_machines.map((machine, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell>
+                            <Typography variant="body2" fontWeight={500}>{machine.code}</Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2">{machine.location || '-'}</Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Chip label={machine.sku} size="small" variant="outlined" />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
+            )}
+
+            {/* Visit Date */}
+            <TextField
+              fullWidth
+              type="date"
+              label="Visit Date"
+              value={assignTaskForm.visit_date}
+              onChange={(e) => setAssignTaskForm({ ...assignTaskForm, visit_date: e.target.value })}
+              margin="normal"
+              InputLabelProps={{ shrink: true }}
+            />
+
+            {/* Assign Technician */}
+            <FormControl fullWidth margin="normal" required>
+              <InputLabel>Assign Technician</InputLabel>
+              <Select
+                value={assignTaskForm.technician_username}
+                onChange={(e) => setAssignTaskForm({ ...assignTaskForm, technician_username: e.target.value })}
+                label="Assign Technician"
+              >
+                <MenuItem value="">Select a Technician</MenuItem>
+                {users
+                  .filter(u => u.role === 'technician')
+                  .map((technician) => {
+                    // Count visits for this technician on the selected date
+                    const selectedDateStr = assignTaskForm.visit_date;
+                    const visitsOnDate = assignedTasks.filter(task => {
+                      if (task.technician_username !== technician.username) return false;
+                      if (!task.visit_date) return false;
+                      const taskDate = task.visit_date.split('T')[0];
+                      return taskDate === selectedDateStr;
+                    });
+                    const visitCount = visitsOnDate.length;
+                    
+                    // Get client names for visits
+                    const clientNames = visitsOnDate.map(task => {
+                      const taskDispenser = dispensers.find(d => d.id === task.dispenser_id);
+                      return getClientName(taskDispenser?.client_id);
+                    }).filter(Boolean);
+                    const uniqueClientNames = [...new Set(clientNames)];
+                    
+                    return (
+                      <MenuItem key={technician.username} value={technician.username}>
+                        <Box sx={{ width: '100%' }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <People sx={{ fontSize: 18, color: 'primary.main' }} />
+                              <Typography fontWeight={500}>{technician.username}</Typography>
+                            </Box>
+                            {assignTaskForm.visit_date && (
+                              <Chip 
+                                label={`${visitCount} visit${visitCount !== 1 ? 's' : ''}`}
+                                size="small"
+                                color={visitCount === 0 ? 'success' : visitCount < 3 ? 'warning' : 'error'}
+                                variant="outlined"
+                                sx={{ ml: 2 }}
+                              />
+                            )}
+                          </Box>
+                          {assignTaskForm.visit_date && visitCount > 0 && (
+                            <Box sx={{ mt: 0.5, pl: 3.5 }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                Clients: {uniqueClientNames.join(', ')}
+                              </Typography>
+                            </Box>
+                          )}
+                        </Box>
+                      </MenuItem>
+                    );
+                  })}
+              </Select>
+            </FormControl>
+
+            {/* Show scheduled visits for selected technician on selected date */}
+            {assignTaskForm.technician_username && assignTaskForm.visit_date && (() => {
+              const visitsOnDate = assignedTasks.filter(task => {
+                if (task.technician_username !== assignTaskForm.technician_username) return false;
+                if (!task.visit_date) return false;
+                const taskDate = task.visit_date.split('T')[0];
+                return taskDate === assignTaskForm.visit_date;
+              });
+              
+              if (visitsOnDate.length > 0) {
+                return (
+                  <Box sx={{ mt: 1, p: 2, bgcolor: 'info.light', borderRadius: 1.5 }}>
+                    <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: 'info.dark' }}>
+                      Scheduled Visits on {formatDateIST(assignTaskForm.visit_date)} ({visitsOnDate.length})
+                    </Typography>
+                    {visitsOnDate.map((visit, idx) => {
+                      const visitDispenser = dispensers.find(d => d.id === visit.dispenser_id);
+                      return (
+                        <Box key={idx} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                          <Chip 
+                            label={visit.task_type} 
+                            size="small" 
+                            color={visit.task_type === 'refill' ? 'primary' : 'secondary'}
+                            sx={{ minWidth: 80 }}
+                          />
+                          <Typography variant="body2">
+                            {getClientName(visitDispenser?.client_id)} - {visitDispenser?.location || 'N/A'}
+                          </Typography>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                );
+              }
+              return null;
+            })()}
+
+            {/* Notes */}
+            <TextField
+              fullWidth
+              label="Notes (Optional)"
+              multiline
+              rows={2}
+              value={assignTaskForm.notes}
+              onChange={(e) => setAssignTaskForm({ ...assignTaskForm, notes: e.target.value })}
+              margin="normal"
+              placeholder="Add any additional notes for this task..."
+            />
+
+            {users.filter(u => u.role === 'technician').length === 0 && (
+              <Box sx={{ mt: 2, p: 2, bgcolor: 'warning.light', borderRadius: 1.5 }}>
+                <Typography variant="body2" color="warning.dark">
+                  No technicians found. Please add technician users in the Users tab first.
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAssignTaskDialogOpen(false)}>Cancel</Button>
+          <Button
+            onClick={async () => {
+              const isInstallation = assignTaskForm.service_type === 'installation';
+              const hasValidData = assignTaskForm.client_id && assignTaskForm.technician_username && 
+                (isInstallation || (assignTaskForm.selected_machines.length > 0));
+              
+              if (hasValidData) {
+                try {
+                  if (isInstallation) {
+                    // For installation tasks, create assignment with client_id in notes and a placeholder dispenser_id
+                    await createTechnicianAssignment({
+                      dispenser_id: `installation_client_${assignTaskForm.client_id}_${Date.now()}`, // Placeholder ID
+                      technician_username: assignTaskForm.technician_username,
+                      assigned_by: user?.username || 'admin',
+                      assigned_date: getCurrentISTISO(),
+                      visit_date: assignTaskForm.visit_date ? new Date(assignTaskForm.visit_date).toISOString() : null,
+                      status: 'assigned',
+                      task_type: 'installation',
+                      notes: `CLIENT_ID:${assignTaskForm.client_id}${assignTaskForm.notes ? ' | ' + assignTaskForm.notes : ''}`,
+                    });
+                    alert(`Installation task assigned to "${assignTaskForm.technician_username}" successfully!`);
+                  } else {
+                    // For other tasks, create assignment for each selected machine
+                    for (const machine of assignTaskForm.selected_machines) {
+                      await createTechnicianAssignment({
+                        dispenser_id: machine.id,
+                        technician_username: assignTaskForm.technician_username,
+                        assigned_by: user?.username || 'admin',
+                        assigned_date: getCurrentISTISO(),
+                        visit_date: assignTaskForm.visit_date ? new Date(assignTaskForm.visit_date).toISOString() : null,
+                        status: 'assigned',
+                        task_type: assignTaskForm.service_type,
+                        notes: assignTaskForm.notes || null,
+                      });
+                    }
+                    alert(`${assignTaskForm.selected_machines.length} task(s) assigned to "${assignTaskForm.technician_username}" successfully!`);
+                  }
+                  setAssignTaskDialogOpen(false);
+                  setAssignTaskForm({
+                    client_id: '',
+                    service_type: 'refill',
+                    machine_codes: [],
+                    selected_machines: [],
+                    visit_date: '',
+                    technician_username: '',
+                    notes: '',
+                  });
+                  loadData(); // Refresh data
+                } catch (err) {
+                  alert('Error assigning task: ' + (err.response?.data?.detail || 'Unknown error'));
+                }
+              }
+            }}
+            variant="contained"
+            disabled={
+              !assignTaskForm.client_id || 
+              !assignTaskForm.technician_username || 
+              (assignTaskForm.service_type !== 'installation' && assignTaskForm.selected_machines.length === 0)
+            }
+            startIcon={<PlaylistAdd />}
+          >
+            {assignTaskForm.service_type === 'installation' 
+              ? 'Assign Installation Task' 
+              : `Assign Task (${assignTaskForm.selected_machines.length})`}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit Task Dialog */}
+      <Dialog open={!!editingTask} onClose={() => setEditingTask(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Edit Task</DialogTitle>
+        <DialogContent>
+          <FormControl fullWidth margin="normal">
+            <InputLabel>Technician</InputLabel>
+            <Select
+              value={editTaskForm.technician_username}
+              onChange={(e) => setEditTaskForm({ ...editTaskForm, technician_username: e.target.value })}
+              label="Technician"
+            >
+              {users.filter(u => u.role === 'technician').map((user) => (
+                <MenuItem key={user.username} value={user.username}>
+                  {user.username}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <TextField
+            fullWidth
+            label="Visit Date"
+            type="date"
+            value={editTaskForm.visit_date}
+            onChange={(e) => setEditTaskForm({ ...editTaskForm, visit_date: e.target.value })}
+            margin="normal"
+            InputLabelProps={{ shrink: true }}
+          />
+          <FormControl fullWidth margin="normal">
+            <InputLabel>Task Type</InputLabel>
+            <Select
+              value={editTaskForm.task_type}
+              onChange={(e) => setEditTaskForm({ ...editTaskForm, task_type: e.target.value })}
+              label="Task Type"
+            >
+              <MenuItem value="refill">Refill</MenuItem>
+              <MenuItem value="maintenance">Maintenance</MenuItem>
+              <MenuItem value="installation">Installation</MenuItem>
+              <MenuItem value="inspection">Inspection</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl fullWidth margin="normal">
+            <InputLabel>Status</InputLabel>
+            <Select
+              value={editTaskForm.status}
+              onChange={(e) => setEditTaskForm({ ...editTaskForm, status: e.target.value })}
+              label="Status"
+            >
+              <MenuItem value="pending">Pending</MenuItem>
+              <MenuItem value="assigned">Assigned & Pending</MenuItem>
+              <MenuItem value="completed">Completed</MenuItem>
+              <MenuItem value="cancelled">Cancelled</MenuItem>
+            </Select>
+          </FormControl>
+          <TextField
+            fullWidth
+            label="Notes"
+            value={editTaskForm.notes}
+            onChange={(e) => setEditTaskForm({ ...editTaskForm, notes: e.target.value })}
+            margin="normal"
+            multiline
+            rows={3}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditingTask(null)}>Cancel</Button>
+          <Button onClick={handleEditTask} variant="contained" color="primary">
+            Save Changes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Task Confirmation Dialog */}
+      <Dialog open={deleteTaskDialogOpen} onClose={() => setDeleteTaskDialogOpen(false)}>
+        <DialogTitle>Delete Task</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete this task? This action cannot be undone.
+          </Typography>
+          {taskToDelete && (
+            <Box sx={{ mt: 2, p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
+              <Typography variant="body2" color="text.secondary">
+                <strong>Technician:</strong> {taskToDelete.technician_username}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                <strong>Task Type:</strong> {taskToDelete.task_type}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                <strong>Status:</strong> {taskToDelete.status}
+              </Typography>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTaskDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleDeleteTask} variant="contained" color="error">
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

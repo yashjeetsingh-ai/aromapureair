@@ -20,6 +20,7 @@ import {
   History,
   Logout,
   Dashboard,
+  CheckCircle,
 } from '@mui/icons-material';
 import Logo from './Logo';
 
@@ -71,14 +72,33 @@ function Sidebar({ user, logout, role }) {
           path: '/admin',
           tab: 4,
         },
+        {
+          text: 'Assign Technician',
+          icon: <People />,
+          path: '/admin',
+          tab: 5,
+        },
       ];
     } else if (role === 'technician') {
       return [
         ...baseItems,
         {
-          text: 'Machines',
+          text: 'Installed Machines',
           icon: <Devices />,
           path: '/technician',
+          tab: 0,
+        },
+        {
+          text: 'Refill & Maintain',
+          icon: <History />,
+          path: '/technician',
+          tab: 1,
+        },
+        {
+          text: 'Completed Tasks',
+          icon: <CheckCircle />,
+          path: '/technician',
+          tab: 2,
         },
       ];
     } else if (role === 'developer') {

@@ -126,3 +126,44 @@ export const deleteUser = async (username) => {
   return response.data;
 };
 
+// Technician Assignments
+export const getTechnicianAssignments = async (technician = null, status = null) => {
+  let url = '/technician-assignments';
+  const params = new URLSearchParams();
+  if (technician) params.append('technician', technician);
+  if (status) params.append('status', status);
+  if (params.toString()) url += `?${params.toString()}`;
+  const response = await api.get(url);
+  return response.data;
+};
+
+export const createTechnicianAssignment = async (assignment) => {
+  const response = await api.post('/technician-assignments', assignment);
+  return response.data;
+};
+
+export const updateTechnicianAssignment = async (assignmentId, assignmentUpdate) => {
+  const response = await api.put(`/technician-assignments/${assignmentId}`, assignmentUpdate);
+  return response.data;
+};
+
+export const deleteTechnicianAssignment = async (assignmentId) => {
+  const response = await api.delete(`/technician-assignments/${assignmentId}`);
+  return response.data;
+};
+
+export const completeAssignment = async (assignmentId, completionData = {}) => {
+  const response = await api.post(`/technician-assignments/${assignmentId}/complete`, completionData);
+  return response.data;
+};
+
+export const getTechnicianStats = async (technicianUsername, startDate = null, endDate = null) => {
+  let url = `/technician-stats/${technicianUsername}`;
+  const params = new URLSearchParams();
+  if (startDate) params.append('start_date', startDate);
+  if (endDate) params.append('end_date', endDate);
+  if (params.toString()) url += `?${params.toString()}`;
+  const response = await api.get(url);
+  return response.data;
+};
+
