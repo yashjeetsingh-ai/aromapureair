@@ -1,0 +1,156 @@
+[
+  {
+    "id": "universal_schedule",
+    "name": "Universal Schedule",
+    "type": "fixed",
+    "time_ranges": [
+      {
+        "start_time": "00:00",
+        "end_time": "06:00",
+        "spray_seconds": 20,
+        "pause_seconds": 40
+      },
+      {
+        "start_time": "06:00",
+        "end_time": "12:00",
+        "spray_seconds": 30,
+        "pause_seconds": 30
+      },
+      {
+        "start_time": "12:00",
+        "end_time": "15:00",
+        "spray_seconds": 50,
+        "pause_seconds": 20
+      },
+      {
+        "start_time": "15:00",
+        "end_time": "23:55",
+        "spray_seconds": 100,
+        "pause_seconds": 10
+      }
+    ]
+  },
+  {
+    "id": "fixed_1",
+    "name": "Morning Schedule",
+    "type": "fixed",
+    "intervals": [
+      {
+        "spray_seconds": 5,
+        "pause_seconds": 55
+      }
+    ],
+    "duration_minutes": 60,
+    "daily_cycles": 4
+  },
+  {
+    "id": "fixed_2",
+    "name": "Afternoon Schedule",
+    "type": "fixed",
+    "intervals": [
+      {
+        "spray_seconds": 10,
+        "pause_seconds": 50
+      }
+    ],
+    "duration_minutes": 60,
+    "daily_cycles": 4
+  },
+  {
+    "id": "fixed_3",
+    "name": "Evening Schedule",
+    "type": "fixed",
+    "intervals": [
+      {
+        "spray_seconds": 15,
+        "pause_seconds": 45
+      }
+    ],
+    "duration_minutes": 60,
+    "daily_cycles": 4
+  },
+  {
+    "id": "fixed_4",
+    "name": "Night Schedule",
+    "type": "fixed",
+    "intervals": [
+      {
+        "spray_seconds": 20,
+        "pause_seconds": 40
+      }
+    ],
+    "duration_minutes": 60,
+    "daily_cycles": 4
+  },
+  {
+    "id": "schedule_6",
+    "name": "Universal",
+    "type": "custom",
+    "intervals": null,
+    "time_ranges": [
+      {
+        "start_time": "00:00",
+        "end_time": "06:00",
+        "spray_seconds": 20,
+        "pause_seconds": 40
+      },
+      {
+        "start_time": "06:00",
+        "end_time": "12:00",
+        "spray_seconds": 30,
+        "pause_seconds": 30
+      },
+      {
+        "start_time": "12:00",
+        "end_time": "15:00",
+        "spray_seconds": 50,
+        "pause_seconds": 20
+      },
+      {
+        "start_time": "15:00",
+        "end_time": "23:55",
+        "spray_seconds": 100,
+        "pause_seconds": 10
+      }
+    ],
+    "duration_minutes": null,
+    "daily_cycles": null,
+    "ml_per_hour": null
+  },
+  {
+    "id": "schedule_7",
+    "name": "iNNOWASH1",
+    "type": "custom",
+    "intervals": null,
+    "time_ranges": [
+      {
+        "start_time": "00:00",
+        "end_time": "06:00",
+        "spray_seconds": 20,
+        "pause_seconds": 40
+      },
+      {
+        "start_time": "06:00",
+        "end_time": "12:00",
+        "spray_seconds": 30,
+        "pause_seconds": 30
+      },
+      {
+        "start_time": "12:00",
+        "end_time": "15:00",
+        "spray_seconds": 50,
+        "pause_seconds": 20
+      },
+      {
+        "start_time": "15:00",
+        "end_time": "23:55",
+        "spray_seconds": 100,
+        "pause_seconds": 10
+      }
+    ],
+    "duration_minutes": null,
+    "daily_cycles": null,
+    "ml_per_hour": null
+  }
+]
+

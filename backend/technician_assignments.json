@@ -1,0 +1,39 @@
+[
+  {
+    "id": "assign_20251208174511_0",
+    "dispenser_id": "installation_client_HCLTNOID7890_1765196111380",
+    "technician_username": "Ram",
+    "assigned_by": "admin1",
+    "assigned_date": "2025-12-08T12:15:11.380Z",
+    "visit_date": "2025-12-11T00:00:00.000Z",
+    "status": "completed",
+    "task_type": "installation",
+    "notes": "CLIENT_ID:HCLTNOID7890 | DONE",
+    "completed_date": "2025-12-08T17:47:11.609668"
+  },
+  {
+    "id": "assign_20251208175049_1",
+    "dispenser_id": "disp_1765196159121",
+    "technician_username": "tech1",
+    "assigned_by": "admin1",
+    "assigned_date": "2025-12-08T12:20:49.669Z",
+    "visit_date": "2025-12-09T00:00:00.000Z",
+    "status": "completed",
+    "task_type": "refill",
+    "notes": "DONE",
+    "completed_date": "2025-12-08T17:51:29.838479"
+  },
+  {
+    "id": "assign_20251209144915_2",
+    "dispenser_id": "installation_client_client_2_1765271955502",
+    "technician_username": "Ram",
+    "assigned_by": "admin1",
+    "assigned_date": "2025-12-09T09:19:15.502Z",
+    "visit_date": "2025-12-10T00:00:00.000Z",
+    "status": "assigned",
+    "task_type": "installation",
+    "notes": "CLIENT_ID:client_2",
+    "completed_date": null
+  }
+]
+

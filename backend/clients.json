@@ -1,0 +1,50 @@
+[
+  {
+    "id": "client_2",
+    "name": "Innovatiview India Ltd.",
+    "contact_person": "Yash",
+    "email": "yash@gmail.com",
+    "phone": "8976898989",
+    "address": "Noida"
+  },
+  {
+    "id": "client_1",
+    "name": "hari sweets ",
+    "contact_person": "rajesh  ji ",
+    "email": "rajesh@yahoo.com",
+    "phone": "09876543210",
+    "address": "Khasra No. 390\nVillage Alipur"
+  },
+  {
+    "id": "INDIINTE8811",
+    "name": "Indira Gandhi Airport Delhi",
+    "contact_person": "Kushwa",
+    "email": "kushwa@igi.gov.in",
+    "phone": "7827288811",
+    "address": "International Airport "
+  },
+  {
+    "id": "ABCXNOID2000",
+    "name": "ABC",
+    "contact_person": "HSUEFINE",
+    "email": "JKNKJDME@jnksfdv.com",
+    "phone": "020202000",
+    "address": "Noida"
+  },
+  {
+    "id": "AROMNOID4321",
+    "name": "Aromapure air",
+    "contact_person": "Yashjeet singh",
+    "email": "yashjeet@avaipl.com",
+    "phone": "987654321",
+    "address": "Noida"
+  },
+  {
+    "id": "HCLTNOID7890",
+    "name": "HCLTECH",
+    "contact_person": "YASHJEET",
+    "email": "AYSHJ@JCNSKJD.COM",
+    "phone": "1234567890",
+    "address": "NOIDA, 126"
+  }
+]

@@ -1,0 +1,19 @@
+[
+  {
+    "id": "refill_20251208_122113_756980_159121_1",
+    "dispenser_id": "disp_1765196159121",
+    "technician_username": "tech1",
+    "refill_amount_ml": 20.0,
+    "level_before_refill": 399.58,
+    "current_ml_refill": 419.58,
+    "fragrance_code": "XDFCGHJNK",
+    "client_id": "HCLTNOID7890",
+    "machine_unique_code": "UHDFJNGJKDI",
+    "location": "1ST FLOOR WASHROOM",
+    "installation_date": "2025-12-08T12:16:00.000Z",
+    "number_of_refills_done": 1,
+    "timestamp": "2025-12-08T12:21:13.728Z",
+    "notes": "Fragrance Code: XDFCGHJNK"
+  }
+]
+

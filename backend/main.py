@@ -3,9 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone
+from starlette.responses import JSONResponse, RedirectResponse, HTMLResponse, Response
 import json
 import os
 from enum import Enum
+import base64
+import time
+import hmac
+import hashlib
+import secrets
 
 app = FastAPI(title="Perfume Dispenser Management System")
 
@@ -18,14 +24,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Data storage files
-DATA_FILE = "data.json"
+# Data storage files - using individual JSON files
+USERS_FILE = "users.json"
+SCHEDULES_FILE = "schedules.json"
+SCHEDULE_TIME_RANGES_FILE = "schedule_time_ranges.json"
+SCHEDULE_INTERVALS_FILE = "schedule_intervals.json"
+DISPENSERS_FILE = "dispensers.json"
+REFILL_LOGS_FILE = "refill_logs.json"
+CLIENTS_FILE = "clients.json"
+TECHNICIAN_ASSIGNMENTS_FILE = "technician_assignments.json"
 CLIENT_MACHINES_FILE = "client_machines.json"
+
+TOKEN_SECRET = os.environ.get("TOKEN_SECRET", "change-this-secret")
+TOKEN_TTL_SECONDS = 60 * 60 * 12  # 12 hours
+EXCLUDED_AUTH_PATHS = {"/api/login", "/api/client-login", "/docs", "/redoc", "/openapi.json", "/api/docs", "/api/health"}
 
 class UserRole(str, Enum):
     TECHNICIAN = "technician"
     ADMIN = "admin"
     DEVELOPER = "developer"
+    CLIENT = "client"
 
 class ScheduleType(str, Enum):
     FIXED = "fixed"
@@ -117,80 +135,213 @@ class TechnicianAssignment(BaseModel):
     notes: Optional[str] = None
     completed_date: Optional[str] = None
 
-# Data storage functions
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
+# Data storage functions - using individual JSON files
+def load_json_file(filepath, default=[]):
+    """Load a JSON file, return default if file doesn't exist"""
+    if os.path.exists(filepath):
+        with open(filepath, "r") as f:
             return json.load(f)
-    return {
-        "users": [],
-        "schedules": [],
-        "dispensers": [],
-        "refill_logs": [],
-        "clients": [],
-        "technician_assignments": []
-    }
+    return default
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
+def save_json_file(filepath, data):
+    """Save data to a JSON file"""
+    with open(filepath, "w") as f:
         json.dump(data, f, indent=2)
+
+def load_users():
+    return load_json_file(USERS_FILE, [])
+
+def save_users(users):
+    save_json_file(USERS_FILE, users)
+
+def load_schedules():
+    """Load schedules and merge with time_ranges and intervals"""
+    schedules = load_json_file(SCHEDULES_FILE, [])
+    time_ranges = load_json_file(SCHEDULE_TIME_RANGES_FILE, [])
+    intervals = load_json_file(SCHEDULE_INTERVALS_FILE, [])
+    
+    # Group time_ranges and intervals by schedule_id
+    time_ranges_by_schedule = {}
+    for tr in time_ranges:
+        schedule_id = tr.get("schedule_id")
+        if schedule_id:
+            if schedule_id not in time_ranges_by_schedule:
+                time_ranges_by_schedule[schedule_id] = []
+            time_ranges_by_schedule[schedule_id].append({
+                "start_time": tr.get("start_time"),
+                "end_time": tr.get("end_time"),
+                "spray_seconds": tr.get("spray_seconds"),
+                "pause_seconds": tr.get("pause_seconds")
+            })
+    
+    intervals_by_schedule = {}
+    for interval in intervals:
+        schedule_id = interval.get("schedule_id")
+        if schedule_id:
+            if schedule_id not in intervals_by_schedule:
+                intervals_by_schedule[schedule_id] = []
+            intervals_by_schedule[schedule_id].append({
+                "spray_seconds": interval.get("spray_seconds"),
+                "pause_seconds": interval.get("pause_seconds")
+            })
+    
+    # Merge into schedules - prioritize separate files over embedded data
+    for schedule in schedules:
+        schedule_id = schedule.get("id")
+        if not schedule_id:
+            continue
+        
+        # Remove embedded time_ranges/intervals if separate files exist (cleanup old format)
+        # Always use separate files if they exist, otherwise keep embedded for backward compatibility
+        if schedule_id in time_ranges_by_schedule:
+            schedule["time_ranges"] = time_ranges_by_schedule[schedule_id]
+        elif "time_ranges" not in schedule:
+            schedule["time_ranges"] = None
+        
+        if schedule_id in intervals_by_schedule:
+            schedule["intervals"] = intervals_by_schedule[schedule_id]
+        elif "intervals" not in schedule:
+            schedule["intervals"] = None
+    
+    return schedules
+
+def save_schedule(schedule):
+    """Save a schedule and its time_ranges/intervals to separate files"""
+    schedules = load_json_file(SCHEDULES_FILE, [])
+    time_ranges = load_json_file(SCHEDULE_TIME_RANGES_FILE, [])
+    intervals = load_json_file(SCHEDULE_INTERVALS_FILE, [])
+    
+    # Make a copy to avoid mutating the original
+    schedule_copy = schedule.copy() if isinstance(schedule, dict) else dict(schedule)
+    schedule_id = schedule_copy.get("id")
+    
+    if not schedule_id:
+        raise ValueError("Schedule must have an id")
+    
+    # Remove old time_ranges and intervals for this schedule
+    time_ranges = [tr for tr in time_ranges if tr.get("schedule_id") != schedule_id]
+    intervals = [i for i in intervals if i.get("schedule_id") != schedule_id]
+    
+    # Extract time_ranges and intervals from schedule copy
+    schedule_time_ranges = schedule_copy.pop("time_ranges", None)
+    schedule_intervals = schedule_copy.pop("intervals", None)
+    
+    # Create schedule dict without time_ranges/intervals
+    schedule_dict = {k: v for k, v in schedule_copy.items()}
+    
+    # Update or add schedule
+    schedule_found = False
+    for i, s in enumerate(schedules):
+        if s.get("id") == schedule_id:
+            schedules[i] = schedule_dict
+            schedule_found = True
+            break
+    if not schedule_found:
+        schedules.append(schedule_dict)
+    
+    # Add time_ranges
+    if schedule_time_ranges:
+        for tr in schedule_time_ranges:
+            time_ranges.append({
+                "schedule_id": schedule_id,
+                "start_time": tr.get("start_time"),
+                "end_time": tr.get("end_time"),
+                "spray_seconds": tr.get("spray_seconds"),
+                "pause_seconds": tr.get("pause_seconds")
+            })
+    
+    # Add intervals
+    if schedule_intervals:
+        for interval in schedule_intervals:
+            intervals.append({
+                "schedule_id": schedule_id,
+                "spray_seconds": interval.get("spray_seconds"),
+                "pause_seconds": interval.get("pause_seconds")
+            })
+    
+    save_json_file(SCHEDULES_FILE, schedules)
+    save_json_file(SCHEDULE_TIME_RANGES_FILE, time_ranges)
+    save_json_file(SCHEDULE_INTERVALS_FILE, intervals)
+    
+    # Return full schedule with time_ranges/intervals restored
+    result = schedule_dict.copy()
+    if schedule_time_ranges:
+        result["time_ranges"] = schedule_time_ranges
+    if schedule_intervals:
+        result["intervals"] = schedule_intervals
+    return result
+
+def delete_schedule(schedule_id):
+    """Delete a schedule and its time_ranges/intervals"""
+    schedules = load_json_file(SCHEDULES_FILE, [])
+    time_ranges = load_json_file(SCHEDULE_TIME_RANGES_FILE, [])
+    intervals = load_json_file(SCHEDULE_INTERVALS_FILE, [])
+    
+    schedules = [s for s in schedules if s.get("id") != schedule_id]
+    time_ranges = [tr for tr in time_ranges if tr.get("schedule_id") != schedule_id]
+    intervals = [i for i in intervals if i.get("schedule_id") != schedule_id]
+    
+    save_json_file(SCHEDULES_FILE, schedules)
+    save_json_file(SCHEDULE_TIME_RANGES_FILE, time_ranges)
+    save_json_file(SCHEDULE_INTERVALS_FILE, intervals)
+
+def load_dispensers():
+    return load_json_file(DISPENSERS_FILE, [])
+
+def save_dispensers(dispensers):
+    save_json_file(DISPENSERS_FILE, dispensers)
+
+def load_refill_logs():
+    return load_json_file(REFILL_LOGS_FILE, [])
+
+def save_refill_logs(refill_logs):
+    save_json_file(REFILL_LOGS_FILE, refill_logs)
+
+def load_clients():
+    return load_json_file(CLIENTS_FILE, [])
+
+def save_clients(clients):
+    save_json_file(CLIENTS_FILE, clients)
+
+def load_technician_assignments():
+    return load_json_file(TECHNICIAN_ASSIGNMENTS_FILE, [])
+
+def save_technician_assignments(assignments):
+    save_json_file(TECHNICIAN_ASSIGNMENTS_FILE, assignments)
 
 # Client machines storage functions (for machines with status 'assigned')
 def load_client_machines():
-    if os.path.exists(CLIENT_MACHINES_FILE):
-        with open(CLIENT_MACHINES_FILE, "r") as f:
-            return json.load(f)
-    return {
-        "client_machines": []
-    }
+    data = load_json_file(CLIENT_MACHINES_FILE, {})
+    return data if isinstance(data, dict) else {"client_machines": data if isinstance(data, list) else []}
 
 def save_client_machines(data):
-    with open(CLIENT_MACHINES_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    save_json_file(CLIENT_MACHINES_FILE, data)
 
 def init_default_data():
-    data = load_data()
-    
+    """Initialize default data in individual JSON files if they don't exist"""
     # Initialize default users if empty
-    if not data.get("users"):
-        data["users"] = [
+    users = load_users()
+    if not users:
+        default_users = [
             {"username": "tech1", "password": "tech123", "role": "technician"},
             {"username": "admin1", "password": "admin123", "role": "admin"},
             {"username": "dev1", "password": "dev123", "role": "developer"}
         ]
+        save_users(default_users)
     
-    # Initialize default fixed schedules if empty
-    if not data.get("schedules"):
-        data["schedules"] = [
+    # Initialize default schedules if empty
+    schedules = load_schedules()
+    if not schedules:
+        default_schedules = [
             {
                 "id": "universal_schedule",
                 "name": "Universal Schedule",
                 "type": "fixed",
                 "time_ranges": [
-                    {
-                        "start_time": "00:00",
-                        "end_time": "06:00",
-                        "spray_seconds": 20,
-                        "pause_seconds": 40
-                    },
-                    {
-                        "start_time": "06:00",
-                        "end_time": "12:00",
-                        "spray_seconds": 30,
-                        "pause_seconds": 30
-                    },
-                    {
-                        "start_time": "12:00",
-                        "end_time": "15:00",
-                        "spray_seconds": 50,
-                        "pause_seconds": 20
-                    },
-                    {
-                        "start_time": "15:00",
-                        "end_time": "23:55",
-                        "spray_seconds": 100,
-                        "pause_seconds": 10
-                    }
+                    {"start_time": "00:00", "end_time": "06:00", "spray_seconds": 20, "pause_seconds": 40},
+                    {"start_time": "06:00", "end_time": "12:00", "spray_seconds": 30, "pause_seconds": 30},
+                    {"start_time": "12:00", "end_time": "15:00", "spray_seconds": 50, "pause_seconds": 20},
+                    {"start_time": "15:00", "end_time": "23:55", "spray_seconds": 100, "pause_seconds": 10}
                 ]
             },
             {
@@ -226,10 +377,13 @@ def init_default_data():
                 "daily_cycles": 4
             }
         ]
+        for schedule in default_schedules:
+            save_schedule(schedule)
     
     # Initialize default clients if empty
-    if not data.get("clients"):
-        data["clients"] = [
+    clients = load_clients()
+    if not clients:
+        default_clients = [
             {
                 "id": "client_1",
                 "name": "Corporate Office Building",
@@ -247,10 +401,12 @@ def init_default_data():
                 "address": "456 Luxury Ave, City, State 12345"
             }
         ]
+        save_clients(default_clients)
     
     # Initialize default dispensers if empty
-    if not data.get("dispensers"):
-        data["dispensers"] = [
+    dispensers = load_dispensers()
+    if not dispensers:
+        default_dispensers = [
             {
                 "id": "disp_1",
                 "name": "Lobby Dispenser",
@@ -261,7 +417,9 @@ def init_default_data():
                 "refill_capacity_ml": 500.0,
                 "current_level_ml": 450.0,
                 "last_refill_date": None,
-                "ml_per_hour": None
+                "ml_per_hour": None,
+                "unique_code": "TEMPLATE_001",
+                "status": None
             },
             {
                 "id": "disp_2",
@@ -273,61 +431,190 @@ def init_default_data():
                 "refill_capacity_ml": 500.0,
                 "current_level_ml": 300.0,
                 "last_refill_date": None,
-                "ml_per_hour": None
+                "ml_per_hour": None,
+                "unique_code": "TEMPLATE_002",
+                "status": None
             }
         ]
-    
-    save_data(data)
-    return data
+        save_dispensers(default_dispensers)
 
 # Initialize data on startup
 init_default_data()
 
-# Authentication
+# Token utilities
+def _sign_payload(payload: str) -> str:
+    return hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def generate_token(user: dict) -> str:
+    issued_at = int(time.time())
+    payload = f"{user['username']}|{user['role']}|{issued_at}"
+    signature = _sign_payload(payload)
+    token = f"{base64.urlsafe_b64encode(payload.encode()).decode()}.{signature}"
+    return token
+
+
+def verify_token(token: str) -> dict:
+    try:
+        encoded_payload, signature = token.split(".")
+        payload = base64.urlsafe_b64decode(encoded_payload.encode()).decode()
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if _sign_payload(payload) != signature:
+        raise HTTPException(status_code=401, detail="Invalid token signature")
+
+    try:
+        username, role, issued_at_str = payload.split("|")
+        issued_at = int(issued_at_str)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    if time.time() - issued_at > TOKEN_TTL_SECONDS:
+        raise HTTPException(status_code=401, detail="Token expired")
+
+    return {"username": username, "role": role}
+
+def require_roles(request: Request, allowed_roles: list):
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if user.get("role") not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return user
+
+
 def authenticate_user(username: str, password: str):
-    data = load_data()
-    for user in data["users"]:
+    users = load_users()
+    for user in users:
         if user["username"] == username and user["password"] == password:
             return user
     return None
+
+def authenticate_client(client_id: str, password: str):
+    """Authenticate client using client_id and fixed password"""
+    if password != "123456":
+        return None
+    
+    clients = load_clients()
+    for client in clients:
+        if client["id"] == client_id:
+            # Return a user-like dict for token generation
+            return {
+                "username": client_id,
+                "role": "client",
+                "client_id": client_id,
+                "client_name": client.get("name", "")
+            }
+    return None
+
+
+@app.middleware("http")
+async def enforce_auth(request: Request, call_next):
+    path = request.url.path
+    
+    # Allow excluded paths without authentication
+    if path in EXCLUDED_AUTH_PATHS:
+        return await call_next(request)
+    
+    # Allow Swagger assets
+    if path.startswith("/docs") or path.startswith("/redoc") or path.startswith("/openapi.json"):
+        return await call_next(request)
+    
+    # Allow API health and docs endpoints
+    if path.startswith("/api/health") or path.startswith("/api/docs"):
+        return await call_next(request)
+
+    # For OPTIONS requests (CORS preflight), validate token if provided but still allow to pass
+    if request.method == "OPTIONS":
+        auth_header = request.headers.get("authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+            try:
+                user = verify_token(token)
+                request.state.user = user
+            except HTTPException:
+                # Invalid token in OPTIONS - still allow OPTIONS to pass for CORS
+                pass
+        return await call_next(request)
+
+    # For all other methods, require authentication
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        user = verify_token(token)
+        request.state.user = user
+    except HTTPException as e:
+        return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+
+    return await call_next(request)
 
 # API Endpoints
 
 @app.post("/api/login")
 async def login(credentials: LoginRequest):
+    """Unified login endpoint - tries regular user first, then client if that fails"""
+    # Try regular user authentication first
     user = authenticate_user(credentials.username, credentials.password)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"username": user["username"], "role": user["role"]}
+    if user:
+        token = generate_token(user)
+        return {"username": user["username"], "role": user["role"], "token": token}
+    
+    # If user authentication fails, try client authentication
+    client = authenticate_client(credentials.username, credentials.password)
+    if client:
+        token = generate_token(client)
+        return {
+            "username": client["username"],
+            "role": client["role"],
+            "client_id": client["client_id"],
+            "client_name": client.get("client_name", ""),
+            "token": token
+        }
+    
+    # Both failed
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.post("/api/client-login")
+async def client_login(credentials: LoginRequest):
+    """Client login endpoint - uses client_id as username and fixed password 123456"""
+    client = authenticate_client(credentials.username, credentials.password)
+    if not client:
+        raise HTTPException(status_code=401, detail="Invalid client credentials")
+    token = generate_token(client)
+    return {
+        "username": client["username"],
+        "role": client["role"],
+        "client_id": client["client_id"],
+        "client_name": client.get("client_name", ""),
+        "token": token
+    }
 
 @app.get("/api/users")
 async def get_users():
     """Get all users (admin/developer only)"""
-    data = load_data()
+    users = load_users()
     # Don't return passwords
-    users = []
-    for user in data.get("users", []):
-        users.append({
-            "username": user["username"],
-            "role": user["role"]
-        })
-    return users
+    return [{
+        "username": user["username"],
+        "role": user["role"]
+    } for user in users]
 
 @app.post("/api/users")
 async def create_user(user: User):
     """Create a new user (admin/developer only)"""
-    data = load_data()
+    users = load_users()
     # Check if username already exists
-    for existing_user in data.get("users", []):
+    for existing_user in users:
         if existing_user["username"] == user.username:
             raise HTTPException(status_code=400, detail="Username already exists")
     
-    if "users" not in data:
-        data["users"] = []
-    
     user_dict = user.dict()
-    data["users"].append(user_dict)
-    save_data(data)
+    users.append(user_dict)
+    save_users(users)
     
     # Return user without password
     return {
@@ -338,8 +625,7 @@ async def create_user(user: User):
 @app.put("/api/users/{username}")
 async def update_user(username: str, user_update: dict):
     """Update a user (admin/developer only)"""
-    data = load_data()
-    users = data.get("users", [])
+    users = load_users()
     
     for i, user in enumerate(users):
         if user["username"] == username:
@@ -349,8 +635,7 @@ async def update_user(username: str, user_update: dict):
             if "role" in user_update:
                 users[i]["role"] = user_update["role"]
             
-            data["users"] = users
-            save_data(data)
+            save_users(users)
             
             return {
                 "username": users[i]["username"],
@@ -362,8 +647,7 @@ async def update_user(username: str, user_update: dict):
 @app.delete("/api/users/{username}")
 async def delete_user(username: str):
     """Delete a user (admin/developer only)"""
-    data = load_data()
-    users = data.get("users", [])
+    users = load_users()
     
     # Don't allow deleting the last user
     if len(users) <= 1:
@@ -374,69 +658,59 @@ async def delete_user(username: str):
     if not user_exists:
         raise HTTPException(status_code=404, detail="User not found")
     
-    data["users"] = [u for u in users if u["username"] != username]
-    save_data(data)
+    users = [u for u in users if u["username"] != username]
+    save_users(users)
     
     return {"message": "User deleted successfully"}
 
 @app.get("/api/schedules")
 async def get_schedules():
-    data = load_data()
-    return data["schedules"]
+    return load_schedules()
 
 @app.post("/api/schedules")
 async def create_schedule(schedule: Schedule):
-    data = load_data()
-    schedule_id = f"schedule_{len(data['schedules']) + 1}"
+    schedules = load_schedules()
+    schedule_id = f"schedule_{len(schedules) + 1}"
     schedule_dict = schedule.dict()
     schedule_dict["id"] = schedule_id
-    data["schedules"].append(schedule_dict)
-    save_data(data)
-    return schedule_dict
+    return save_schedule(schedule_dict)
 
 @app.get("/api/schedules/{schedule_id}")
 async def get_schedule(schedule_id: str):
-    data = load_data()
-    for schedule in data["schedules"]:
-        if schedule["id"] == schedule_id:
+    schedules = load_schedules()
+    for schedule in schedules:
+        if schedule.get("id") == schedule_id:
             return schedule
     raise HTTPException(status_code=404, detail="Schedule not found")
 
 @app.put("/api/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, schedule: Schedule):
-    data = load_data()
-    for i, s in enumerate(data["schedules"]):
-        if s["id"] == schedule_id:
-            schedule_dict = schedule.dict()
-            schedule_dict["id"] = schedule_id
-            data["schedules"][i] = schedule_dict
-            save_data(data)
-            return schedule_dict
-    raise HTTPException(status_code=404, detail="Schedule not found")
+    schedules = load_schedules()
+    schedule_found = any(s.get("id") == schedule_id for s in schedules)
+    if not schedule_found:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    schedule_dict = schedule.dict()
+    schedule_dict["id"] = schedule_id
+    return save_schedule(schedule_dict)
 
 @app.delete("/api/schedules/{schedule_id}")
-async def delete_schedule(schedule_id: str):
-    data = load_data()
+async def delete_schedule_endpoint(schedule_id: str):
+    schedules = load_schedules()
     # Don't allow deleting fixed schedules
-    for schedule in data["schedules"]:
-        if schedule["id"] == schedule_id:
-            if schedule["type"] == "fixed":
+    for schedule in schedules:
+        if schedule.get("id") == schedule_id:
+            if schedule.get("type") == "fixed":
                 raise HTTPException(status_code=400, detail="Cannot delete fixed schedules")
-            data["schedules"] = [s for s in data["schedules"] if s["id"] != schedule_id]
-            save_data(data)
+            delete_schedule(schedule_id)
             return {"message": "Schedule deleted"}
     raise HTTPException(status_code=404, detail="Schedule not found")
 
 @app.get("/api/dispensers")
 async def get_dispensers():
-    """Get all dispensers - merges installed machines from data.json and assigned machines from client_machines.json"""
-    data = load_data()
+    """Get all dispensers - merges installed machines from dispensers.json and assigned machines from client_machines.json"""
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
-    
-    # Get installed machines and SKU templates from data.json
-    installed_machines = data.get("dispensers", [])
-    
-    # Get assigned machines from client_machines.json
     assigned_machines = client_machines_data.get("client_machines", [])
     
     # Merge both lists
@@ -445,12 +719,12 @@ async def get_dispensers():
 
 @app.get("/api/dispensers/{dispenser_id}")
 async def get_dispenser(dispenser_id: str):
-    """Get a specific dispenser - checks both data.json and client_machines.json"""
-    data = load_data()
+    """Get a specific dispenser - checks both dispensers.json and client_machines.json"""
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
     
     # Check installed machines first
-    for dispenser in data.get("dispensers", []):
+    for dispenser in installed_machines:
         if dispenser["id"] == dispenser_id:
             return dispenser
     
@@ -463,9 +737,9 @@ async def get_dispenser(dispenser_id: str):
 
 @app.post("/api/dispensers")
 async def create_dispenser(dispenser: Dispenser):
-    """Create a dispenser - routes to client_machines.json if status is 'assigned', otherwise to data.json
+    """Create a dispenser - routes to client_machines.json if status is 'assigned', otherwise to dispensers.json
     If creating an installed machine with a code that exists in assigned machines, automatically updates/moves it"""
-    data = load_data()
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
     
     # Convert to dict and check status - include all fields even if None
@@ -509,13 +783,13 @@ async def create_dispenser(dispenser: Dispenser):
         # Remove from client_machines.json
         client_machines_data["client_machines"].pop(existing_assigned_index)
         save_client_machines(client_machines_data)
-        # Add to data.json as installed
-        data["dispensers"].append(dispenser_dict)
-        save_data(data)
+        # Add to dispensers.json as installed
+        installed_machines.append(dispenser_dict)
+        save_dispensers(installed_machines)
         return dispenser_dict
     
     # Check for duplicate unique_code in both files (normal case)
-    all_dispensers = data.get("dispensers", []) + client_machines_data.get("client_machines", [])
+    all_dispensers = installed_machines + client_machines_data.get("client_machines", [])
     for existing_dispenser in all_dispensers:
         if existing_dispenser.get("unique_code") == dispenser.unique_code:
             raise HTTPException(
@@ -534,16 +808,16 @@ async def create_dispenser(dispenser: Dispenser):
         client_machines_data["client_machines"].append(dispenser_dict)
         save_client_machines(client_machines_data)
     else:
-        # Save to data.json (installed machines or SKU templates)
-        data["dispensers"].append(dispenser_dict)
-        save_data(data)
+        # Save to dispensers.json (installed machines or SKU templates)
+        installed_machines.append(dispenser_dict)
+        save_dispensers(installed_machines)
     
     return dispenser_dict
 
 @app.put("/api/dispensers/{dispenser_id}")
 async def update_dispenser(dispenser_id: str, dispenser: Dispenser):
     """Update a dispenser - handles moving between files if status changes"""
-    data = load_data()
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
     
     # Find the dispenser in either file
@@ -557,9 +831,9 @@ async def update_dispenser(dispenser_id: str, dispenser: Dispenser):
             in_client_machines = True
             break
     
-    # Check data.json if not found
+    # Check dispensers.json if not found
     if dispenser_index is None:
-        for i, d in enumerate(data.get("dispensers", [])):
+        for i, d in enumerate(installed_machines):
             if d["id"] == dispenser_id:
                 dispenser_index = i
                 break
@@ -568,7 +842,7 @@ async def update_dispenser(dispenser_id: str, dispenser: Dispenser):
         raise HTTPException(status_code=404, detail="Dispenser not found")
     
     # Check for duplicate unique_code (excluding the current dispenser)
-    all_dispensers = data.get("dispensers", []) + client_machines_data.get("client_machines", [])
+    all_dispensers = installed_machines + client_machines_data.get("client_machines", [])
     for existing_dispenser in all_dispensers:
         if (existing_dispenser.get("unique_code") == dispenser.unique_code and 
             existing_dispenser.get("id") != dispenser_id):
@@ -595,7 +869,7 @@ async def update_dispenser(dispenser_id: str, dispenser: Dispenser):
     if in_client_machines:
         original_machine = client_machines_data.get("client_machines", [])[dispenser_index]
     else:
-        original_machine = data.get("dispensers", [])[dispenser_index]
+        original_machine = installed_machines[dispenser_index]
     
     # If machine has a client_id, don't allow changing it to a different client
     if original_machine and original_machine.get("client_id"):
@@ -612,18 +886,18 @@ async def update_dispenser(dispenser_id: str, dispenser: Dispenser):
     
     # If status changed from assigned to installed (or vice versa), move between files
     if was_assigned and not will_be_assigned:
-        # Moving from client_machines.json to data.json
+        # Moving from client_machines.json to dispensers.json
         # Remove from client_machines
         client_machines_data["client_machines"].pop(dispenser_index)
         save_client_machines(client_machines_data)
-        # Add to data.json
-        data["dispensers"].append(dispenser_dict)
-        save_data(data)
+        # Add to dispensers.json
+        installed_machines.append(dispenser_dict)
+        save_dispensers(installed_machines)
     elif not was_assigned and will_be_assigned:
-        # Moving from data.json to client_machines.json
-        # Remove from data.json
-        data["dispensers"].pop(dispenser_index)
-        save_data(data)
+        # Moving from dispensers.json to client_machines.json
+        # Remove from dispensers.json
+        installed_machines.pop(dispenser_index)
+        save_dispensers(installed_machines)
         # Add to client_machines
         if "client_machines" not in client_machines_data:
             client_machines_data["client_machines"] = []
@@ -635,15 +909,15 @@ async def update_dispenser(dispenser_id: str, dispenser: Dispenser):
             client_machines_data["client_machines"][dispenser_index] = dispenser_dict
             save_client_machines(client_machines_data)
         else:
-            data["dispensers"][dispenser_index] = dispenser_dict
-            save_data(data)
+            installed_machines[dispenser_index] = dispenser_dict
+            save_dispensers(installed_machines)
     
     return dispenser_dict
 
 @app.delete("/api/dispensers/{dispenser_id}")
 async def delete_dispenser(dispenser_id: str):
     """Delete a machine/dispenser - checks both files and completely removes it"""
-    data = load_data()
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
     
     # Check and remove from client_machines.json (assigned machines)
@@ -655,10 +929,9 @@ async def delete_dispenser(dispenser_id: str):
         save_client_machines(client_machines_data)
         return {"message": "Dispenser deleted successfully"}
     
-    # Check and remove from data.json (installed machines or SKU templates)
-    dispensers = data.get("dispensers", [])
+    # Check and remove from dispensers.json (installed machines or SKU templates)
     dispenser_to_delete = None
-    for d in dispensers:
+    for d in installed_machines:
         if d["id"] == dispenser_id:
             dispenser_to_delete = d
             break
@@ -670,13 +943,14 @@ async def delete_dispenser(dispenser_id: str):
     # Installed machines (with client_id) should NOT be deleted - they should be uninstalled/removed from client instead
     # But if user explicitly wants to delete, we'll allow it and completely remove it
     # Remove dispenser completely - do NOT convert it back to SKU template
-    data["dispensers"] = [d for d in dispensers if d["id"] != dispenser_id]
+    installed_machines = [d for d in installed_machines if d["id"] != dispenser_id]
+    save_dispensers(installed_machines)
     
     # Also remove associated refill logs for this dispenser
-    if "refill_logs" in data:
-        data["refill_logs"] = [r for r in data.get("refill_logs", []) if r.get("dispenser_id") != dispenser_id]
+    refill_logs = load_refill_logs()
+    refill_logs = [r for r in refill_logs if r.get("dispenser_id") != dispenser_id]
+    save_refill_logs(refill_logs)
     
-    save_data(data)
     return {"message": "Dispenser deleted successfully"}
 
 @app.post("/api/dispensers/{dispenser_id}/assign-schedule")
@@ -686,7 +960,7 @@ async def assign_schedule(dispenser_id: str, body: dict):
     # Convert empty string to None
     if schedule_id == "":
         schedule_id = None
-    data = load_data()
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
     
     # Check client_machines.json first
@@ -696,19 +970,19 @@ async def assign_schedule(dispenser_id: str, body: dict):
             save_client_machines(client_machines_data)
             return client_machines_data["client_machines"][i]
     
-    # Check data.json
-    for i, d in enumerate(data.get("dispensers", [])):
+    # Check dispensers.json
+    for i, d in enumerate(installed_machines):
         if d["id"] == dispenser_id:
-            data["dispensers"][i]["current_schedule_id"] = schedule_id
-            save_data(data)
-            return data["dispensers"][i]
+            installed_machines[i]["current_schedule_id"] = schedule_id
+            save_dispensers(installed_machines)
+            return installed_machines[i]
     
     raise HTTPException(status_code=404, detail="Dispenser not found")
 
 @app.post("/api/dispensers/{dispenser_id}/refill")
 async def log_refill(dispenser_id: str, refill: RefillLog):
     """Log a refill - checks both files, but refills should only be for installed machines"""
-    data = load_data()
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
     
     # Find dispenser in both files
@@ -724,9 +998,9 @@ async def log_refill(dispenser_id: str, refill: RefillLog):
             dispenser_index = i
             break
     
-    # Check data.json if not found
+    # Check dispensers.json if not found
     if not dispenser:
-        for i, d in enumerate(data.get("dispensers", [])):
+        for i, d in enumerate(installed_machines):
             if d["id"] == dispenser_id:
                 dispenser = d
                 dispenser_index = i
@@ -803,12 +1077,12 @@ async def log_refill(dispenser_id: str, refill: RefillLog):
         client_machines_data["client_machines"][dispenser_index]["last_refill_date"] = refill.timestamp
         save_client_machines(client_machines_data)
     else:
-        data["dispensers"][dispenser_index]["current_level_ml"] = float(current_ml_refill)
-        data["dispensers"][dispenser_index]["last_refill_date"] = refill.timestamp
-        save_data(data)
+        installed_machines[dispenser_index]["current_level_ml"] = float(current_ml_refill)
+        installed_machines[dispenser_index]["last_refill_date"] = refill.timestamp
+        save_dispensers(installed_machines)
     
     # Count number of refills done for this machine (number_of_refills_done)
-    existing_refills = data.get('refill_logs', [])
+    existing_refills = load_refill_logs()
     refills_for_machine = [r for r in existing_refills if r.get("dispenser_id") == dispenser_id]
     number_of_refills_done = len(refills_for_machine) + 1  # +1 for this refill
     
@@ -838,7 +1112,7 @@ async def log_refill(dispenser_id: str, refill: RefillLog):
         if match:
             fragrance_code_value = match.group(1).strip()
     
-    # Add refill log (always in data.json) with all new fields
+    # Add refill log to refill_logs.json with all new fields
     # Ensure all fields are stored, even if they come from fallback values
     refill_dict = {
         "id": refill_id,
@@ -873,48 +1147,32 @@ async def log_refill(dispenser_id: str, refill: RefillLog):
     print(f"  - Full refill_dict keys: {list(refill_dict.keys())}")
     print(f"  - Full refill_dict: {refill_dict}")
     
-    if "refill_logs" not in data:
-        data["refill_logs"] = []
-    data["refill_logs"].append(refill_dict)
-    
-    # Verify the data was added correctly before saving
-    last_refill = data["refill_logs"][-1]
-    print(f"Verification - Last refill in data has level_before_refill: {last_refill.get('level_before_refill')}")
-    print(f"Verification - Last refill in data has current_ml_refill: {last_refill.get('current_ml_refill')}")
-    
-    save_data(data)
-    
-    # Verify after saving
-    verify_data = load_data()
-    verify_refill = [r for r in verify_data.get('refill_logs', []) if r.get('id') == refill_id]
-    if verify_refill:
-        print(f"After save verification - Refill has level_before_refill: {verify_refill[0].get('level_before_refill')}")
-        print(f"After save verification - Refill has current_ml_refill: {verify_refill[0].get('current_ml_refill')}")
+    existing_refills.append(refill_dict)
+    save_refill_logs(existing_refills)
     
     return refill_dict
 
 @app.get("/api/refill-logs")
-async def get_refill_logs():
-    data = load_data()
-    return data["refill_logs"]
+async def get_refill_logs(request: Request):
+    # Restrict to admin/developer
+    require_roles(request, ["admin", "developer"])
+    return load_refill_logs()
 
 @app.get("/api/clients")
 async def get_clients():
-    data = load_data()
-    return data.get("clients", [])
+    return load_clients()
 
 @app.get("/api/clients/{client_id}")
 async def get_client(client_id: str):
-    data = load_data()
-    for client in data.get("clients", []):
+    clients = load_clients()
+    for client in clients:
         if client["id"] == client_id:
             return client
     raise HTTPException(status_code=404, detail="Client not found")
 
 @app.post("/api/clients")
 async def create_client(client: Client):
-    data = load_data()
-    existing_clients = data.get("clients", [])
+    existing_clients = load_clients()
     
     # Generate client ID: first 4 chars of name + first 4 chars of address + last 4 digits of phone
     def generate_client_id(name, address, phone):
@@ -958,35 +1216,31 @@ async def create_client(client: Client):
     
     client_dict = client.dict()
     client_dict["id"] = client_id
-    if "clients" not in data:
-        data["clients"] = []
-    data["clients"].append(client_dict)
-    save_data(data)
+    existing_clients.append(client_dict)
+    save_clients(existing_clients)
     return client_dict
 
 @app.put("/api/clients/{client_id}")
 async def update_client(client_id: str, client: Client):
-    data = load_data()
-    clients = data.get("clients", [])
+    clients = load_clients()
     for i, c in enumerate(clients):
         if c["id"] == client_id:
             client_dict = client.dict()
             client_dict["id"] = client_id
             clients[i] = client_dict
-            data["clients"] = clients
-            save_data(data)
+            save_clients(clients)
             return client_dict
     raise HTTPException(status_code=404, detail="Client not found")
 
 @app.delete("/api/clients/{client_id}")
 async def delete_client(client_id: str):
     """Delete a client - checks both files for associated dispensers"""
-    data = load_data()
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
-    clients = data.get("clients", [])
+    clients = load_clients()
     
     # Check if any dispensers are using this client in both files
-    for dispenser in data.get("dispensers", []):
+    for dispenser in installed_machines:
         if dispenser.get("client_id") == client_id:
             raise HTTPException(status_code=400, detail="Cannot delete client with associated dispensers")
     
@@ -994,8 +1248,8 @@ async def delete_client(client_id: str):
         if dispenser.get("client_id") == client_id:
             raise HTTPException(status_code=400, detail="Cannot delete client with associated dispensers")
     
-    data["clients"] = [c for c in clients if c["id"] != client_id]
-    save_data(data)
+    clients = [c for c in clients if c["id"] != client_id]
+    save_clients(clients)
     return {"message": "Client deleted"}
 
 def calculate_time_range_usage(time_ranges, ml_per_hour=None):
@@ -1044,8 +1298,9 @@ def calculate_time_range_usage(time_ranges, ml_per_hour=None):
 @app.get("/api/dispensers/{dispenser_id}/usage-calculation")
 async def calculate_usage(dispenser_id: str):
     """Calculate daily usage based on assigned schedule - checks both files"""
-    data = load_data()
+    installed_machines = load_dispensers()
     client_machines_data = load_client_machines()
+    schedules = load_schedules()
     
     # Find dispenser in both files
     dispenser = None
@@ -1055,7 +1310,7 @@ async def calculate_usage(dispenser_id: str):
             break
     
     if not dispenser:
-        for d in data.get("dispensers", []):
+        for d in installed_machines:
             if d["id"] == dispenser_id:
                 dispenser = d
                 break
@@ -1068,8 +1323,8 @@ async def calculate_usage(dispenser_id: str):
     
     # Find schedule
     schedule = None
-    for s in data["schedules"]:
-        if s["id"] == dispenser["current_schedule_id"]:
+    for s in schedules:
+        if s.get("id") == dispenser.get("current_schedule_id"):
             schedule = s
             break
     
@@ -1169,8 +1424,7 @@ async def calculate_usage(dispenser_id: str):
 @app.get("/api/technician-assignments")
 async def get_technician_assignments(technician: str = None, status: str = None):
     """Get all technician assignments, optionally filtered by technician username or status"""
-    data = load_data()
-    assignments = data.get("technician_assignments", [])
+    assignments = load_technician_assignments()
     
     if technician:
         assignments = [a for a in assignments if a.get("technician_username") == technician]
@@ -1183,8 +1437,8 @@ async def get_technician_assignments(technician: str = None, status: str = None)
 @app.get("/api/technician-assignments/{assignment_id}")
 async def get_technician_assignment(assignment_id: str):
     """Get a specific assignment by ID"""
-    data = load_data()
-    for assignment in data.get("technician_assignments", []):
+    assignments = load_technician_assignments()
+    for assignment in assignments:
         if assignment["id"] == assignment_id:
             return assignment
     raise HTTPException(status_code=404, detail="Assignment not found")
@@ -1192,26 +1446,22 @@ async def get_technician_assignment(assignment_id: str):
 @app.post("/api/technician-assignments")
 async def create_technician_assignment(assignment: TechnicianAssignment):
     """Create a new technician assignment"""
-    data = load_data()
+    assignments = load_technician_assignments()
     
     # Generate ID if not provided
-    assignment_id = assignment.id or f"assign_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(data.get('technician_assignments', []))}"
+    assignment_id = assignment.id or f"assign_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(assignments)}"
     
     assignment_dict = assignment.dict()
     assignment_dict["id"] = assignment_id
     
-    if "technician_assignments" not in data:
-        data["technician_assignments"] = []
-    
-    data["technician_assignments"].append(assignment_dict)
-    save_data(data)
+    assignments.append(assignment_dict)
+    save_technician_assignments(assignments)
     return assignment_dict
 
 @app.put("/api/technician-assignments/{assignment_id}")
 async def update_technician_assignment(assignment_id: str, assignment_update: dict):
     """Update a technician assignment"""
-    data = load_data()
-    assignments = data.get("technician_assignments", [])
+    assignments = load_technician_assignments()
     
     for i, assignment in enumerate(assignments):
         if assignment["id"] == assignment_id:
@@ -1220,8 +1470,7 @@ async def update_technician_assignment(assignment_id: str, assignment_update: di
                 if key != "id":  # Don't allow changing ID
                     assignments[i][key] = value
             
-            data["technician_assignments"] = assignments
-            save_data(data)
+            save_technician_assignments(assignments)
             return assignments[i]
     
     raise HTTPException(status_code=404, detail="Assignment not found")
@@ -1229,23 +1478,21 @@ async def update_technician_assignment(assignment_id: str, assignment_update: di
 @app.delete("/api/technician-assignments/{assignment_id}")
 async def delete_technician_assignment(assignment_id: str):
     """Delete a technician assignment"""
-    data = load_data()
-    assignments = data.get("technician_assignments", [])
+    assignments = load_technician_assignments()
     
     # Check if assignment exists
     assignment_exists = any(a["id"] == assignment_id for a in assignments)
     if not assignment_exists:
         raise HTTPException(status_code=404, detail="Assignment not found")
     
-    data["technician_assignments"] = [a for a in assignments if a["id"] != assignment_id]
-    save_data(data)
+    assignments = [a for a in assignments if a["id"] != assignment_id]
+    save_technician_assignments(assignments)
     return {"message": "Assignment deleted successfully"}
 
 @app.post("/api/technician-assignments/{assignment_id}/complete")
 async def complete_assignment(assignment_id: str, completion_data: dict = None):
     """Mark an assignment as completed"""
-    data = load_data()
-    assignments = data.get("technician_assignments", [])
+    assignments = load_technician_assignments()
     
     for i, assignment in enumerate(assignments):
         if assignment["id"] == assignment_id:
@@ -1273,8 +1520,7 @@ async def complete_assignment(assignment_id: str, completion_data: dict = None):
                         # For non-installation tasks, just update notes normally
                         assignments[i]["notes"] = completion_notes
             
-            data["technician_assignments"] = assignments
-            save_data(data)
+            save_technician_assignments(assignments)
             return assignments[i]
     
     raise HTTPException(status_code=404, detail="Assignment not found")
@@ -1282,9 +1528,8 @@ async def complete_assignment(assignment_id: str, completion_data: dict = None):
 @app.get("/api/technician-stats/{technician_username}")
 async def get_technician_stats(technician_username: str, start_date: str = None, end_date: str = None):
     """Get statistics for a specific technician"""
-    data = load_data()
-    assignments = data.get("technician_assignments", [])
-    refill_logs = data.get("refill_logs", [])
+    assignments = load_technician_assignments()
+    refill_logs = load_refill_logs()
     
     # Filter assignments for this technician
     tech_assignments = [a for a in assignments if a.get("technician_username") == technician_username]
@@ -1328,6 +1573,42 @@ async def get_technician_stats(technician_username: str, start_date: str = None,
         "visit_count": len(unique_visits),
         "total_ml_refilled": round(total_ml_refilled, 2)
     }
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint to verify API is running"""
+    try:
+        # Check if data files are accessible
+        files_status = {
+            "users": os.path.exists(USERS_FILE),
+            "schedules": os.path.exists(SCHEDULES_FILE),
+            "dispensers": os.path.exists(DISPENSERS_FILE),
+            "clients": os.path.exists(CLIENTS_FILE),
+            "refill_logs": os.path.exists(REFILL_LOGS_FILE),
+            "technician_assignments": os.path.exists(TECHNICIAN_ASSIGNMENTS_FILE),
+            "client_machines": os.path.exists(CLIENT_MACHINES_FILE),
+        }
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "files": files_status,
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        )
+
+@app.get("/api/docs")
+async def api_docs():
+    """API documentation endpoint - redirects to FastAPI Swagger UI"""
+    return RedirectResponse(url="/docs")
 
 if __name__ == "__main__":
     import uvicorn
