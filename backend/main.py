@@ -60,6 +60,7 @@ class Schedule(BaseModel):
     duration_minutes: Optional[int] = None  # Total duration of one cycle (for old format)
     daily_cycles: Optional[int] = None  # How many times per day (for old format)
     ml_per_hour: Optional[float] = None  # ML dispense rate per hour (alternative calculation method)
+    days_of_week: Optional[List[int]] = None  # Days of week (0=Monday, 6=Sunday). If None, runs every day
 
 class Client(BaseModel):
     id: Optional[str] = None
