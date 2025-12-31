@@ -4,7 +4,13 @@ import axios from 'axios';
 const API_BASE_URL = process.env.REACT_APP_API_URL;
 
 if (!API_BASE_URL) {
+  console.error('REACT_APP_API_URL is not defined!');
   throw new Error('REACT_APP_API_URL environment variable is not defined. Please create a .env file in the frontend directory.');
+}
+
+// Log API URL in development only (for debugging)
+if (process.env.NODE_ENV === 'development') {
+  console.log('API Base URL configured:', API_BASE_URL);
 }
 
 // Sanitize console output to prevent API URL exposure
@@ -77,6 +83,24 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    // Log full error in development for debugging
+    if (process.env.NODE_ENV === 'development') {
+      console.error('API Error:', {
+        message: error.message,
+        code: error.code,
+        config: {
+          url: error.config?.url,
+          baseURL: error.config?.baseURL,
+          method: error.config?.method,
+        },
+        response: error.response ? {
+          status: error.response.status,
+          data: error.response.data,
+        } : null,
+        request: error.request ? 'Request made but no response' : null,
+      });
+    }
+    
     // Deep sanitize error to prevent API URL exposure in console
     if (error.config) {
       // Sanitize the config object (which axios uses for logging)

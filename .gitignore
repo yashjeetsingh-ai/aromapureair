@@ -24,6 +24,11 @@ backend/data.json
 
 # Secrets and credentials - NEVER commit these
 backend/google_service.json
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
 
 # IDE
 .vscode/
@@ -40,4 +45,7 @@ Thumbs.db
 frontend/build/
 frontend/.pnp
 frontend/.pnp.js
+
+# Vercel
+.vercel
 

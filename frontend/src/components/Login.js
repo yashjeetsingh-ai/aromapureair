@@ -29,7 +29,16 @@ function Login() {
       login(userData);
       navigate(`/${userData.role}`);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Login failed');
+      console.error('Login error:', err);
+      if (err.response) {
+        setError(err.response.data?.detail || 'Login failed');
+      } else if (err.request) {
+        setError('Network error: Could not reach the server. Please check your connection.');
+      } else if (err.message) {
+        setError(`Error: ${err.message}`);
+      } else {
+        setError('Login failed. Please try again.');
+      }
     }
   };
 

@@ -28,18 +28,72 @@ from gsheets_service import (
 
 app = FastAPI(title="Perfume Dispenser Management System")
 
+@app.on_event("startup")
+async def startup_event():
+    """Startup event handler - ensures app is ready and initializes data"""
+    print("Application starting up...")
+    print(f"PORT: {os.environ.get('PORT', 'not set')}")
+    print(f"ALLOWED_ORIGINS: {os.environ.get('ALLOWED_ORIGINS', 'not set')}")
+    
+    # Initialize default data (this will fail gracefully if credentials aren't available)
+    # The app will still start, but data initialization will happen on first request
+    try:
+        clear_data_cache()
+        init_default_data()
+        print("Default data initialized successfully")
+    except Exception as e:
+        print(f"Warning: Could not initialize default data on startup: {e}")
+        print("Data will be initialized on first request")
+    
+    print("Application ready to accept requests")
+
 # CORS middleware
+# Allow requests from any origin (for Cloud Run deployment)
+# In production, you can restrict this by setting ALLOWED_ORIGINS environment variable
+# Example: ALLOWED_ORIGINS="https://yourdomain.com,https://www.yourdomain.com,https://aromapureair.vercel.app"
+allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "")
+
+# Always include Vercel production URL and common development origins
+default_origins = [
+    "https://aromapureair.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:3001",
+]
+
+if not allowed_origins_env:
+    # Default: Use specific origins for better CORS preflight support
+    # Using explicit origins instead of "*" ensures proper CORS headers for preflight requests
+    allow_origins = default_origins
+    allow_creds = False
+elif allowed_origins_env == "*":
+    # If explicitly set to "*", use wildcard but note this prevents allow_credentials
+    allow_origins = ["*"]
+    allow_creds = False
+else:
+    # Production: Use specific origins from environment variable
+    allow_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+    # Always include default production origins (Vercel) if not using wildcard
+    if "*" not in allow_origins:
+        for origin in default_origins:
+            if origin not in allow_origins:
+                allow_origins.append(origin)
+    # Don't use credentials when using explicit origins to avoid CORS issues
+    # JWT tokens are sent in Authorization headers, not cookies, so credentials not needed
+    allow_creds = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=allow_origins,
+    allow_credentials=allow_creds,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # Data storage - using Google Sheets (see gsheets_service.py)
 
-TOKEN_SECRET = os.environ.get("TOKEN_SECRET", "change-this-secret")
+TOKEN_SECRET = os.environ.get("TOKEN_SECRET", secrets.token_urlsafe(32))  # Generate random secret if not provided
 TOKEN_TTL_SECONDS = 60 * 60 * 12  # 12 hours
 EXCLUDED_AUTH_PATHS = {"/api/login", "/api/client-login", "/docs", "/redoc", "/openapi.json", "/api/docs", "/api/health"}
 
@@ -254,10 +308,8 @@ def init_default_data():
     # Don't initialize default dispensers - start with empty list
     # Dispensers should be added through the admin interface
 
-# Initialize data on startup
-# Clear cache to force fresh load from Google Sheets
-clear_data_cache()
-init_default_data()
+# Initialize data on startup - moved to startup event handler
+# This prevents crashes during import if credentials aren't available yet
 
 # Token utilities
 def _sign_payload(payload: str) -> str:
@@ -352,6 +404,11 @@ def authenticate_client(client_id: str, password: str):
 async def enforce_auth(request: Request, call_next):
     path = request.url.path
     
+    # For OPTIONS requests (CORS preflight), always allow through without authentication
+    # CORS middleware will handle adding proper headers
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    
     # Allow excluded paths without authentication
     if path in EXCLUDED_AUTH_PATHS:
         return await call_next(request)
@@ -362,19 +419,6 @@ async def enforce_auth(request: Request, call_next):
     
     # Allow API health and docs endpoints
     if path.startswith("/api/health") or path.startswith("/api/docs"):
-        return await call_next(request)
-
-    # For OPTIONS requests (CORS preflight), validate token if provided but still allow to pass
-    if request.method == "OPTIONS":
-        auth_header = request.headers.get("authorization")
-        if auth_header and auth_header.lower().startswith("bearer "):
-            token = auth_header.split(" ", 1)[1].strip()
-            try:
-                user = verify_token(token)
-                request.state.user = user
-            except HTTPException:
-                # Invalid token in OPTIONS - still allow OPTIONS to pass for CORS
-                pass
         return await call_next(request)
 
     # For all other methods, require authentication
@@ -1494,5 +1538,7 @@ async def api_docs():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Use PORT environment variable for Cloud Run compatibility (defaults to 8000 for local)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 

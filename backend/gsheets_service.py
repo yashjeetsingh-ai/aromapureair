@@ -12,7 +12,41 @@ from functools import wraps
 
 # Google Sheets Configuration
 SPREADSHEET_ID = "1TkSgekL4LxhRl8U0q972Z21tiiP5PNyYIrQBB8C5144"
-SERVICE_ACCOUNT_FILE = "google_service.json"
+
+# Support both local file and Secret Manager (for Cloud Run)
+def get_service_account_credentials():
+    """Get service account credentials from file or Secret Manager"""
+    # Check for Secret Manager environment variable (Cloud Run sets this)
+    # When secret is mounted, Cloud Run sets GOOGLE_SERVICE_JSON env var with the file path
+    secret_path = os.environ.get("GOOGLE_SERVICE_JSON")
+    if secret_path and os.path.exists(secret_path):
+        with open(secret_path, 'r') as f:
+            return json.loads(f.read())
+    
+    # Also check common Cloud Run secret mount locations
+    cloud_run_secret_paths = [
+        "/secrets/google-service-json",  # Cloud Run secret mount path (primary)
+        "/app/google_service.json",
+        "/secrets/google_service.json",
+    ]
+    
+    for secret_path in cloud_run_secret_paths:
+        if os.path.exists(secret_path):
+            with open(secret_path, 'r') as f:
+                return json.loads(f.read())
+    
+    # Fallback to local file
+    service_account_file = os.environ.get("SERVICE_ACCOUNT_FILE", "google_service.json")
+    if os.path.exists(service_account_file):
+        with open(service_account_file, 'r') as f:
+            return json.loads(f.read())
+    
+    raise FileNotFoundError(
+        f"Service account credentials not found. "
+        f"Tried: GOOGLE_SERVICE_JSON env var, {cloud_run_secret_paths}, and {service_account_file}"
+    )
+
+SERVICE_ACCOUNT_FILE = "google_service.json"  # Keep for backward compatibility
 
 # Sheet names (tabs in the spreadsheet)
 SHEET_USERS = "Users"
@@ -99,8 +133,10 @@ def get_gsheets_client():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        creds = Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=scope
+        # Support both Secret Manager (Cloud Run) and local file
+        service_account_data = get_service_account_credentials()
+        creds = Credentials.from_service_account_info(
+            service_account_data, scopes=scope
         )
         _gsheets_client = gspread.authorize(creds)
     return _gsheets_client
