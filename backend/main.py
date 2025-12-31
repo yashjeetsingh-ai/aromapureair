@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 from datetime import datetime, timezone
 from starlette.responses import JSONResponse, RedirectResponse, HTMLResponse, Response
@@ -12,6 +12,19 @@ import time
 import hmac
 import hashlib
 import secrets
+import bcrypt
+from gsheets_service import (
+    load_users, save_users,
+    load_clients, save_clients,
+    load_dispensers, save_dispensers,
+    load_schedules, save_schedule, delete_schedule,
+    load_schedule_time_ranges, save_schedule_time_ranges,
+    load_schedule_intervals, save_schedule_intervals,
+    load_refill_logs, save_refill_logs,
+    load_technician_assignments, save_technician_assignments,
+    load_client_machines, save_client_machines,
+    clear_data_cache
+)
 
 app = FastAPI(title="Perfume Dispenser Management System")
 
@@ -24,16 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Data storage files - using individual JSON files
-USERS_FILE = "users.json"
-SCHEDULES_FILE = "schedules.json"
-SCHEDULE_TIME_RANGES_FILE = "schedule_time_ranges.json"
-SCHEDULE_INTERVALS_FILE = "schedule_intervals.json"
-DISPENSERS_FILE = "dispensers.json"
-REFILL_LOGS_FILE = "refill_logs.json"
-CLIENTS_FILE = "clients.json"
-TECHNICIAN_ASSIGNMENTS_FILE = "technician_assignments.json"
-CLIENT_MACHINES_FILE = "client_machines.json"
+# Data storage - using Google Sheets (see gsheets_service.py)
 
 TOKEN_SECRET = os.environ.get("TOKEN_SECRET", "change-this-secret")
 TOKEN_TTL_SECONDS = 60 * 60 * 12  # 12 hours
@@ -104,6 +108,8 @@ class Dispenser(BaseModel):
     status: Optional[str] = None  # Status of the machine (e.g., 'assigned', 'installed', etc.)
 
 class RefillLog(BaseModel):
+    model_config = ConfigDict(extra="allow")  # Allow fields to be optional during creation
+    
     id: Optional[str] = None  # Backend will generate unique ID if not provided
     dispenser_id: Optional[str] = None  # Can be provided or extracted from URL
     technician_username: str
@@ -118,10 +124,6 @@ class RefillLog(BaseModel):
     number_of_refills_done: Optional[int] = None  # Count of refills for this machine
     timestamp: str
     notes: Optional[str] = None
-    
-    class Config:
-        # Allow fields to be optional during creation
-        extra = "allow"
 
 class TechnicianAssignment(BaseModel):
     id: Optional[str] = None
@@ -135,199 +137,65 @@ class TechnicianAssignment(BaseModel):
     notes: Optional[str] = None
     completed_date: Optional[str] = None
 
-# Data storage functions - using individual JSON files
-def load_json_file(filepath, default=[]):
-    """Load a JSON file, return default if file doesn't exist"""
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            return json.load(f)
-    return default
+# Data storage functions - using Google Sheets (imported from gsheets_service.py)
+# All load/save functions are now imported from gsheets_service module
 
-def save_json_file(filepath, data):
-    """Save data to a JSON file"""
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2)
+# Password security functions (must be defined before init_default_data)
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt"""
+    if not password:
+        raise ValueError("Password cannot be empty")
+    # Generate salt and hash password
+    salt = bcrypt.gensalt(rounds=12)  # Higher rounds = more secure but slower
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
 
-def load_users():
-    return load_json_file(USERS_FILE, [])
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against a hash"""
+    if not plain_password or not hashed_password:
+        return False
+    try:
+        # Check if it's already a bcrypt hash (starts with $2b$)
+        if hashed_password.startswith('$2b$') or hashed_password.startswith('$2a$'):
+            return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+        # Legacy: if it's a plain text password (for migration), compare directly
+        # This allows gradual migration from plain text to hashed
+        return plain_password == hashed_password
+    except Exception:
+        return False
 
-def save_users(users):
-    save_json_file(USERS_FILE, users)
+def is_password_hashed(password: str) -> bool:
+    """Check if a password is already hashed"""
+    return password.startswith('$2b$') or password.startswith('$2a$')
 
-def load_schedules():
-    """Load schedules and merge with time_ranges and intervals"""
-    schedules = load_json_file(SCHEDULES_FILE, [])
-    time_ranges = load_json_file(SCHEDULE_TIME_RANGES_FILE, [])
-    intervals = load_json_file(SCHEDULE_INTERVALS_FILE, [])
-    
-    # Group time_ranges and intervals by schedule_id
-    time_ranges_by_schedule = {}
-    for tr in time_ranges:
-        schedule_id = tr.get("schedule_id")
-        if schedule_id:
-            if schedule_id not in time_ranges_by_schedule:
-                time_ranges_by_schedule[schedule_id] = []
-            time_ranges_by_schedule[schedule_id].append({
-                "start_time": tr.get("start_time"),
-                "end_time": tr.get("end_time"),
-                "spray_seconds": tr.get("spray_seconds"),
-                "pause_seconds": tr.get("pause_seconds")
-            })
-    
-    intervals_by_schedule = {}
-    for interval in intervals:
-        schedule_id = interval.get("schedule_id")
-        if schedule_id:
-            if schedule_id not in intervals_by_schedule:
-                intervals_by_schedule[schedule_id] = []
-            intervals_by_schedule[schedule_id].append({
-                "spray_seconds": interval.get("spray_seconds"),
-                "pause_seconds": interval.get("pause_seconds")
-            })
-    
-    # Merge into schedules - prioritize separate files over embedded data
-    for schedule in schedules:
-        schedule_id = schedule.get("id")
-        if not schedule_id:
-            continue
-        
-        # Remove embedded time_ranges/intervals if separate files exist (cleanup old format)
-        # Always use separate files if they exist, otherwise keep embedded for backward compatibility
-        if schedule_id in time_ranges_by_schedule:
-            schedule["time_ranges"] = time_ranges_by_schedule[schedule_id]
-        elif "time_ranges" not in schedule:
-            schedule["time_ranges"] = None
-        
-        if schedule_id in intervals_by_schedule:
-            schedule["intervals"] = intervals_by_schedule[schedule_id]
-        elif "intervals" not in schedule:
-            schedule["intervals"] = None
-    
-    return schedules
-
-def save_schedule(schedule):
-    """Save a schedule and its time_ranges/intervals to separate files"""
-    schedules = load_json_file(SCHEDULES_FILE, [])
-    time_ranges = load_json_file(SCHEDULE_TIME_RANGES_FILE, [])
-    intervals = load_json_file(SCHEDULE_INTERVALS_FILE, [])
-    
-    # Make a copy to avoid mutating the original
-    schedule_copy = schedule.copy() if isinstance(schedule, dict) else dict(schedule)
-    schedule_id = schedule_copy.get("id")
-    
-    if not schedule_id:
-        raise ValueError("Schedule must have an id")
-    
-    # Remove old time_ranges and intervals for this schedule
-    time_ranges = [tr for tr in time_ranges if tr.get("schedule_id") != schedule_id]
-    intervals = [i for i in intervals if i.get("schedule_id") != schedule_id]
-    
-    # Extract time_ranges and intervals from schedule copy
-    schedule_time_ranges = schedule_copy.pop("time_ranges", None)
-    schedule_intervals = schedule_copy.pop("intervals", None)
-    
-    # Create schedule dict without time_ranges/intervals
-    schedule_dict = {k: v for k, v in schedule_copy.items()}
-    
-    # Update or add schedule
-    schedule_found = False
-    for i, s in enumerate(schedules):
-        if s.get("id") == schedule_id:
-            schedules[i] = schedule_dict
-            schedule_found = True
-            break
-    if not schedule_found:
-        schedules.append(schedule_dict)
-    
-    # Add time_ranges
-    if schedule_time_ranges:
-        for tr in schedule_time_ranges:
-            time_ranges.append({
-                "schedule_id": schedule_id,
-                "start_time": tr.get("start_time"),
-                "end_time": tr.get("end_time"),
-                "spray_seconds": tr.get("spray_seconds"),
-                "pause_seconds": tr.get("pause_seconds")
-            })
-    
-    # Add intervals
-    if schedule_intervals:
-        for interval in schedule_intervals:
-            intervals.append({
-                "schedule_id": schedule_id,
-                "spray_seconds": interval.get("spray_seconds"),
-                "pause_seconds": interval.get("pause_seconds")
-            })
-    
-    save_json_file(SCHEDULES_FILE, schedules)
-    save_json_file(SCHEDULE_TIME_RANGES_FILE, time_ranges)
-    save_json_file(SCHEDULE_INTERVALS_FILE, intervals)
-    
-    # Return full schedule with time_ranges/intervals restored
-    result = schedule_dict.copy()
-    if schedule_time_ranges:
-        result["time_ranges"] = schedule_time_ranges
-    if schedule_intervals:
-        result["intervals"] = schedule_intervals
-    return result
-
-def delete_schedule(schedule_id):
-    """Delete a schedule and its time_ranges/intervals"""
-    schedules = load_json_file(SCHEDULES_FILE, [])
-    time_ranges = load_json_file(SCHEDULE_TIME_RANGES_FILE, [])
-    intervals = load_json_file(SCHEDULE_INTERVALS_FILE, [])
-    
-    schedules = [s for s in schedules if s.get("id") != schedule_id]
-    time_ranges = [tr for tr in time_ranges if tr.get("schedule_id") != schedule_id]
-    intervals = [i for i in intervals if i.get("schedule_id") != schedule_id]
-    
-    save_json_file(SCHEDULES_FILE, schedules)
-    save_json_file(SCHEDULE_TIME_RANGES_FILE, time_ranges)
-    save_json_file(SCHEDULE_INTERVALS_FILE, intervals)
-
-def load_dispensers():
-    return load_json_file(DISPENSERS_FILE, [])
-
-def save_dispensers(dispensers):
-    save_json_file(DISPENSERS_FILE, dispensers)
-
-def load_refill_logs():
-    return load_json_file(REFILL_LOGS_FILE, [])
-
-def save_refill_logs(refill_logs):
-    save_json_file(REFILL_LOGS_FILE, refill_logs)
-
-def load_clients():
-    return load_json_file(CLIENTS_FILE, [])
-
-def save_clients(clients):
-    save_json_file(CLIENTS_FILE, clients)
-
-def load_technician_assignments():
-    return load_json_file(TECHNICIAN_ASSIGNMENTS_FILE, [])
-
-def save_technician_assignments(assignments):
-    save_json_file(TECHNICIAN_ASSIGNMENTS_FILE, assignments)
-
-# Client machines storage functions (for machines with status 'assigned')
-def load_client_machines():
-    data = load_json_file(CLIENT_MACHINES_FILE, {})
-    return data if isinstance(data, dict) else {"client_machines": data if isinstance(data, list) else []}
-
-def save_client_machines(data):
-    save_json_file(CLIENT_MACHINES_FILE, data)
+def hash_existing_passwords():
+    """Migrate existing plain text passwords to hashed passwords"""
+    users = load_users()
+    updated = False
+    for user in users:
+        password = str(user.get("password") or "").strip()
+        if password and not is_password_hashed(password):
+            # Hash the plain text password
+            user["password"] = hash_password(password)
+            updated = True
+    if updated:
+        save_users(users)
+        print("Migrated existing passwords to hashed format")
 
 def init_default_data():
-    """Initialize default data in individual JSON files if they don't exist"""
+    """Initialize default data in Google Sheets if they don't exist"""
     # Initialize default users if empty
     users = load_users()
     if not users:
         default_users = [
-            {"username": "tech1", "password": "tech123", "role": "technician"},
-            {"username": "admin1", "password": "admin123", "role": "admin"},
-            {"username": "dev1", "password": "dev123", "role": "developer"}
+            {"username": "tech1", "password": hash_password("tech123"), "role": "technician"},
+            {"username": "admin1", "password": hash_password("admin123"), "role": "admin"},
+            {"username": "dev1", "password": hash_password("dev123"), "role": "developer"}
         ]
         save_users(default_users)
+    else:
+        # Migrate any existing plain text passwords to hashed
+        hash_existing_passwords()
     
     # Initialize default schedules if empty
     schedules = load_schedules()
@@ -380,65 +248,15 @@ def init_default_data():
         for schedule in default_schedules:
             save_schedule(schedule)
     
-    # Initialize default clients if empty
-    clients = load_clients()
-    if not clients:
-        default_clients = [
-            {
-                "id": "client_1",
-                "name": "Corporate Office Building",
-                "contact_person": "John Smith",
-                "email": "john@corporate.com",
-                "phone": "+1-555-0101",
-                "address": "123 Business St, City, State 12345"
-            },
-            {
-                "id": "client_2",
-                "name": "Luxury Hotel",
-                "contact_person": "Jane Doe",
-                "email": "jane@hotel.com",
-                "phone": "+1-555-0102",
-                "address": "456 Luxury Ave, City, State 12345"
-            }
-        ]
-        save_clients(default_clients)
+    # Don't initialize default clients - start with empty list
+    # Clients should be added through the admin interface
     
-    # Initialize default dispensers if empty
-    dispensers = load_dispensers()
-    if not dispensers:
-        default_dispensers = [
-            {
-                "id": "disp_1",
-                "name": "Lobby Dispenser",
-                "sku": "AROMA-DISP-001",
-                "location": "Main Lobby, Floor 1",
-                "client_id": "client_1",
-                "current_schedule_id": "fixed_1",
-                "refill_capacity_ml": 500.0,
-                "current_level_ml": 450.0,
-                "last_refill_date": None,
-                "ml_per_hour": None,
-                "unique_code": "TEMPLATE_001",
-                "status": None
-            },
-            {
-                "id": "disp_2",
-                "name": "Office Dispenser",
-                "sku": "AROMA-DISP-002",
-                "location": "Office Floor 2, Room 201",
-                "client_id": "client_1",
-                "current_schedule_id": "fixed_2",
-                "refill_capacity_ml": 500.0,
-                "current_level_ml": 300.0,
-                "last_refill_date": None,
-                "ml_per_hour": None,
-                "unique_code": "TEMPLATE_002",
-                "status": None
-            }
-        ]
-        save_dispensers(default_dispensers)
+    # Don't initialize default dispensers - start with empty list
+    # Dispensers should be added through the admin interface
 
 # Initialize data on startup
+# Clear cache to force fresh load from Google Sheets
+clear_data_cache()
 init_default_data()
 
 # Token utilities
@@ -485,10 +303,31 @@ def require_roles(request: Request, allowed_roles: list):
 
 
 def authenticate_user(username: str, password: str):
+    """Authenticate user using credentials from Google Sheets with secure password hashing"""
     users = load_users()
+    
+    # Normalize input - strip whitespace and convert to string
+    username_normalized = str(username).strip() if username else ""
+    password_normalized = str(password).strip() if password else ""
+    
+    if not username_normalized or not password_normalized:
+        return None
+    
+    # Find user and verify password securely
     for user in users:
-        if user["username"] == username and user["password"] == password:
-            return user
+        # Get username, always as string, strip whitespace
+        user_username = str(user.get("username") or "").strip()
+        
+        if user_username == username_normalized:
+            # Get stored password (could be hashed or plain text for migration)
+            stored_password = str(user.get("password") or "").strip()
+            
+            # Verify password using secure comparison
+            if verify_password(password_normalized, stored_password):
+                # Return user without password
+                user_copy = {k: v for k, v in user.items() if k != "password"}
+                return user
+    
     return None
 
 def authenticate_client(client_id: str, password: str):
@@ -605,7 +444,7 @@ async def get_users():
 
 @app.post("/api/users")
 async def create_user(user: User):
-    """Create a new user (admin/developer only)"""
+    """Create a new user (admin/developer only) - password is automatically hashed"""
     users = load_users()
     # Check if username already exists
     for existing_user in users:
@@ -613,6 +452,8 @@ async def create_user(user: User):
             raise HTTPException(status_code=400, detail="Username already exists")
     
     user_dict = user.dict()
+    # Hash the password before storing
+    user_dict["password"] = hash_password(user.password)
     users.append(user_dict)
     save_users(users)
     
@@ -624,14 +465,15 @@ async def create_user(user: User):
 
 @app.put("/api/users/{username}")
 async def update_user(username: str, user_update: dict):
-    """Update a user (admin/developer only)"""
+    """Update a user (admin/developer only) - password is automatically hashed if provided"""
     users = load_users()
     
     for i, user in enumerate(users):
         if user["username"] == username:
             # Update fields if provided
             if "password" in user_update:
-                users[i]["password"] = user_update["password"]
+                # Hash the password before storing
+                users[i]["password"] = hash_password(user_update["password"])
             if "role" in user_update:
                 users[i]["role"] = user_update["role"]
             
@@ -662,6 +504,13 @@ async def delete_user(username: str):
     save_users(users)
     
     return {"message": "User deleted successfully"}
+
+@app.post("/api/users/migrate-passwords")
+async def migrate_passwords(request: Request):
+    """Migrate all plain text passwords to hashed format (admin/developer only)"""
+    require_roles(request, ["admin", "developer"])
+    hash_existing_passwords()
+    return {"message": "Password migration completed successfully"}
 
 @app.get("/api/schedules")
 async def get_schedules():
@@ -946,10 +795,12 @@ async def delete_dispenser(dispenser_id: str):
     installed_machines = [d for d in installed_machines if d["id"] != dispenser_id]
     save_dispensers(installed_machines)
     
-    # Also remove associated refill logs for this dispenser
+    # Also remove associated refill logs for this dispenser (only if there are any)
     refill_logs = load_refill_logs()
-    refill_logs = [r for r in refill_logs if r.get("dispenser_id") != dispenser_id]
-    save_refill_logs(refill_logs)
+    refills_to_remove = [r for r in refill_logs if r.get("dispenser_id") == dispenser_id]
+    if refills_to_remove:
+        refill_logs = [r for r in refill_logs if r.get("dispenser_id") != dispenser_id]
+        save_refill_logs(refill_logs)
     
     return {"message": "Dispenser deleted successfully"}
 
@@ -1154,9 +1005,24 @@ async def log_refill(dispenser_id: str, refill: RefillLog):
 
 @app.get("/api/refill-logs")
 async def get_refill_logs(request: Request):
-    # Restrict to admin/developer
-    require_roles(request, ["admin", "developer"])
-    return load_refill_logs()
+    """Get refill logs - admins/developers see all, technicians see only their own"""
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    refill_logs = load_refill_logs()
+    
+    # If user is technician, filter to only their own logs
+    if user.get("role") == "technician":
+        technician_username = user.get("username", "")
+        technician_normalized = str(technician_username).strip() if technician_username else ""
+        refill_logs = [
+            log for log in refill_logs
+            if str(log.get("technician_username") or "").strip() == technician_normalized
+        ]
+    # Admin and developer can see all logs
+    
+    return refill_logs
 
 @app.get("/api/clients")
 async def get_clients():
@@ -1427,7 +1293,20 @@ async def get_technician_assignments(technician: str = None, status: str = None)
     assignments = load_technician_assignments()
     
     if technician:
-        assignments = [a for a in assignments if a.get("technician_username") == technician]
+        # Normalize technician username for comparison (strip whitespace)
+        technician_normalized = str(technician).strip() if technician else ""
+        # Debug: print all assignments and filtered results
+        print(f"DEBUG: Filtering assignments for technician: '{technician_normalized}'")
+        print(f"DEBUG: Total assignments before filter: {len(assignments)}")
+        for a in assignments:
+            stored_username = str(a.get("technician_username") or "").strip()
+            print(f"DEBUG: Assignment {a.get('id')}: technician_username='{stored_username}' (match: {stored_username == technician_normalized})")
+        
+        assignments = [
+            a for a in assignments 
+            if str(a.get("technician_username") or "").strip() == technician_normalized
+        ]
+        print(f"DEBUG: Filtered assignments count: {len(assignments)}")
     
     if status:
         assignments = [a for a in assignments if a.get("status") == status]
@@ -1531,11 +1410,20 @@ async def get_technician_stats(technician_username: str, start_date: str = None,
     assignments = load_technician_assignments()
     refill_logs = load_refill_logs()
     
+    # Normalize technician username for comparison (strip whitespace)
+    technician_normalized = str(technician_username).strip() if technician_username else ""
+    
     # Filter assignments for this technician
-    tech_assignments = [a for a in assignments if a.get("technician_username") == technician_username]
+    tech_assignments = [
+        a for a in assignments 
+        if str(a.get("technician_username") or "").strip() == technician_normalized
+    ]
     
     # Filter refill logs for this technician
-    tech_refills = [r for r in refill_logs if r.get("technician_username") == technician_username]
+    tech_refills = [
+        r for r in refill_logs 
+        if str(r.get("technician_username") or "").strip() == technician_normalized
+    ]
     
     # Apply date filters if provided
     if start_date:
@@ -1578,21 +1466,15 @@ async def get_technician_stats(technician_username: str, start_date: str = None,
 async def health_check():
     """Health check endpoint to verify API is running"""
     try:
-        # Check if data files are accessible
-        files_status = {
-            "users": os.path.exists(USERS_FILE),
-            "schedules": os.path.exists(SCHEDULES_FILE),
-            "dispensers": os.path.exists(DISPENSERS_FILE),
-            "clients": os.path.exists(CLIENTS_FILE),
-            "refill_logs": os.path.exists(REFILL_LOGS_FILE),
-            "technician_assignments": os.path.exists(TECHNICIAN_ASSIGNMENTS_FILE),
-            "client_machines": os.path.exists(CLIENT_MACHINES_FILE),
-        }
+        # Test Google Sheets connection
+        from gsheets_service import get_spreadsheet
+        spreadsheet = get_spreadsheet()
         
         return {
             "status": "healthy",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "files": files_status,
+            "storage": "Google Sheets",
+            "spreadsheet_id": "1TkSgekL4LxhRl8U0q972Z21tiiP5PNyYIrQBB8C5144",
             "version": "1.0.0"
         }
     except Exception as e:

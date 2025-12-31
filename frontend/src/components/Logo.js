@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box, Typography } from '@mui/material';
-import { AutoAwesome } from '@mui/icons-material';
+import { Air } from '@mui/icons-material';
 
 function Logo({ size = 'medium', color = 'primary' }) {
   const sizes = {
@@ -31,7 +31,7 @@ function Logo({ size = 'medium', color = 'primary' }) {
           height: currentSize.iconSize + 8,
         }}
       >
-        <AutoAwesome sx={{ fontSize: currentSize.iconSize }} />
+        <Air sx={{ fontSize: currentSize.iconSize }} />
       </Box>
       <Typography
         variant="h6"
@@ -43,7 +43,7 @@ function Logo({ size = 'medium', color = 'primary' }) {
           letterSpacing: '0.02em',
         }}
       >
-        AromaFlow
+        Aromahpure Air
       </Typography>
     </Box>
   );

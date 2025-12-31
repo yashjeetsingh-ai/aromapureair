@@ -228,13 +228,21 @@ function TechnicianDashboard() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [dispensersData, clientsData, schedulesData, assignmentsData, statsData, refillLogsData] = await Promise.all([
+      // Load refill logs separately to handle errors gracefully
+      let refillLogsData = [];
+      try {
+        refillLogsData = await getRefillLogs();
+      } catch (err) {
+        console.error('Error loading refill logs:', err);
+        // Continue without refill logs if there's an error
+      }
+      
+      const [dispensersData, clientsData, schedulesData, assignmentsData, statsData] = await Promise.all([
         getDispensers(),
         getClients(),
         getSchedules(),
         getTechnicianAssignments(user?.username),
         getTechnicianStats(user?.username),
-        getRefillLogs(),
       ]);
       setDispensers(dispensersData);
       setClients(clientsData);
@@ -259,14 +267,6 @@ function TechnicianDashboard() {
       const usageResults = await Promise.all(usagePromises);
       const usageMap = Object.assign({}, ...usageResults);
       setUsageData(usageMap);
-      
-      // Also load refill logs for accurate current level calculation
-      try {
-        const refillLogsData = await getRefillLogs();
-        setRefillLogs(refillLogsData);
-      } catch (err) {
-        console.error('Error loading refill logs:', err);
-      }
     } catch (err) {
       console.error('Error loading data:', err);
     } finally {

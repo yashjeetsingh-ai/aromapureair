@@ -104,7 +104,7 @@ function HomePage() {
               lineHeight: 1.2,
             }}
           >
-            AromaFlow
+            Aromahpure Air
             <br />
             <Box component="span" sx={{ fontWeight: 400, color: 'text.secondary', fontSize: '0.6em' }}>
               Perfume Dispenser Management System
