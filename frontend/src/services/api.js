@@ -1,6 +1,53 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000/api';
+// Get API URL from environment variable (required)
+const API_BASE_URL = process.env.REACT_APP_API_URL;
+
+if (!API_BASE_URL) {
+  throw new Error('REACT_APP_API_URL environment variable is not defined. Please create a .env file in the frontend directory.');
+}
+
+// Sanitize console output to prevent API URL exposure
+const sanitizeConsoleOutput = () => {
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  
+  const sanitize = (args) => {
+    return args.map(arg => {
+      if (typeof arg === 'string') {
+        return arg.replace(API_BASE_URL, '[API_URL]').replace(/https?:\/\/[^\s"'<>]+/g, (url) => {
+          if (url.includes(API_BASE_URL.split('/')[2])) {
+            return '[API_URL]';
+          }
+          return url;
+        });
+      }
+      if (arg && typeof arg === 'object') {
+        try {
+          const str = JSON.stringify(arg);
+          const sanitized = str.replace(API_BASE_URL, '[API_URL]').replace(/https?:\/\/[^\s"'<>]+/g, (url) => {
+            if (url.includes(API_BASE_URL.split('/')[2])) {
+              return '[API_URL]';
+            }
+            return url;
+          });
+          return JSON.parse(sanitized);
+        } catch {
+          return arg;
+        }
+      }
+      return arg;
+    });
+  };
+  
+  console.error = (...args) => originalError.apply(console, sanitize(args));
+  console.warn = (...args) => originalWarn.apply(console, sanitize(args));
+};
+
+// Enable sanitization in development
+if (process.env.NODE_ENV === 'development') {
+  sanitizeConsoleOutput();
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -25,6 +72,61 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// Sanitize error responses to prevent API URL exposure
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // Deep sanitize error to prevent API URL exposure in console
+    if (error.config) {
+      // Sanitize the config object (which axios uses for logging)
+      if (error.config.baseURL) {
+        error.config.baseURL = '[API_URL]';
+      }
+      if (error.config.url && typeof error.config.url === 'string') {
+        error.config.url = error.config.url.replace(API_BASE_URL, '/api');
+      }
+      // Sanitize the full url in config
+      if (error.config.url && error.config.baseURL) {
+        Object.defineProperty(error.config, 'fullUrl', {
+          value: '[API_URL]' + error.config.url,
+          writable: false
+        });
+      }
+    }
+    
+    // Sanitize error message
+    if (error.message && typeof error.message === 'string') {
+      error.message = error.message.replace(API_BASE_URL, '[API_URL]');
+      error.message = error.message.replace(/https?:\/\/[^\s]+/g, '[API_URL]');
+    }
+    
+    // Sanitize response config if present
+    if (error.response?.config) {
+      if (error.response.config.baseURL) {
+        error.response.config.baseURL = '[API_URL]';
+      }
+      if (error.response.config.url) {
+        error.response.config.url = error.response.config.url.replace(API_BASE_URL, '/api');
+      }
+    }
+    
+    // Sanitize request object
+    if (error.request) {
+      const requestCopy = { ...error.request };
+      if (requestCopy.responseURL) {
+        requestCopy.responseURL = requestCopy.responseURL.replace(API_BASE_URL, '[API_URL]');
+      }
+      Object.defineProperty(error, 'request', {
+        value: requestCopy,
+        writable: false,
+        configurable: true
+      });
+    }
+    
+    return Promise.reject(error);
+  }
+);
 
 export const login = async (username, password) => {
   const response = await api.post('/login', { username, password });
