@@ -22,6 +22,9 @@ yarn-error.log*
 # Data
 backend/data.json
 
+# Secrets and credentials - NEVER commit these
+backend/google_service.json
+
 # IDE
 .vscode/
 .idea/
