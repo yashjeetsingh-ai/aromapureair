@@ -13,15 +13,17 @@ import hmac
 import hashlib
 import secrets
 import bcrypt
-from gsheets_service import (
-    load_users, save_users,
-    load_clients, save_clients,
-    load_dispensers, save_dispensers,
+from supabase_service import (
+    load_users, save_users, delete_user,
+    load_clients, save_clients, delete_client,
+    load_dispensers, save_dispensers,  # Legacy - kept for backward compatibility
+    load_machine_templates, save_machine_templates, delete_machine_template,  # New
+    load_machine_instances, save_machine_instances, delete_machine_instance,  # New
     load_schedules, save_schedule, delete_schedule,
     load_schedule_time_ranges, save_schedule_time_ranges,
     load_schedule_intervals, save_schedule_intervals,
-    load_refill_logs, save_refill_logs,
-    load_technician_assignments, save_technician_assignments,
+    load_refill_logs, save_refill_logs, delete_refill_logs_by_dispenser,
+    load_technician_assignments, save_technician_assignments, delete_technician_assignment,
     load_client_machines, save_client_machines,
     clear_data_cache
 )
@@ -91,7 +93,7 @@ app.add_middleware(
     max_age=3600,
 )
 
-# Data storage - using Google Sheets (see gsheets_service.py)
+# Data storage - using Supabase (see supabase_service.py)
 
 TOKEN_SECRET = os.environ.get("TOKEN_SECRET", secrets.token_urlsafe(32))  # Generate random secret if not provided
 TOKEN_TTL_SECONDS = 60 * 60 * 12  # 12 hours
@@ -145,8 +147,37 @@ class Client(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    password: Optional[str] = None  # Hashed password stored in database
+    password_plain: Optional[str] = None  # Plain password (for admin retrieval only)
+
+class MachineTemplate(BaseModel):
+    """Machine Template (SKU Specification) - Universal machine data"""
+    id: str
+    sku: str
+    name: str
+    refill_capacity_ml: float
+    ml_per_hour: float
+    description: Optional[str] = None
+
+class MachineInstance(BaseModel):
+    """Machine Instance (Installed Machine) - Client-specific machine"""
+    id: str
+    template_id: Optional[str] = None  # Reference to machine_templates.id
+    sku: str  # Denormalized for quick access
+    client_id: str  # Required for instances
+    location: str  # Required for instances
+    unique_code: str  # Unique code (required, unique across all instances)
+    current_schedule_id: Optional[str] = None
+    refill_capacity_ml: float
+    ml_per_hour: float
+    current_level_ml: float = 0
+    last_refill_date: Optional[str] = None
+    installation_date: Optional[str] = None
+    fragrance_code: Optional[str] = None
+    status: Optional[str] = None  # 'assigned', 'installed', 'discontinued'
 
 class Dispenser(BaseModel):
+    """Legacy model - kept for backward compatibility"""
     id: str
     name: str
     sku: str
@@ -156,10 +187,11 @@ class Dispenser(BaseModel):
     refill_capacity_ml: float
     current_level_ml: float
     last_refill_date: Optional[str] = None
-    installation_date: Optional[str] = None  # Date when machine was installed
-    ml_per_hour: float  # Machine-specific ML dispense rate per hour (required)
-    unique_code: str  # Unique code for each machine installation (required)
-    status: Optional[str] = None  # Status of the machine (e.g., 'assigned', 'installed', etc.)
+    installation_date: Optional[str] = None
+    fragrance_code: Optional[str] = None
+    ml_per_hour: float
+    unique_code: str
+    status: Optional[str] = None
 
 class RefillLog(BaseModel):
     model_config = ConfigDict(extra="allow")  # Allow fields to be optional during creation
@@ -191,8 +223,8 @@ class TechnicianAssignment(BaseModel):
     notes: Optional[str] = None
     completed_date: Optional[str] = None
 
-# Data storage functions - using Google Sheets (imported from gsheets_service.py)
-# All load/save functions are now imported from gsheets_service module
+# Data storage functions - using Supabase (imported from supabase_service.py)
+# All load/save functions are now imported from supabase_service module
 
 # Password security functions (must be defined before init_default_data)
 def hash_password(password: str) -> str:
@@ -383,20 +415,34 @@ def authenticate_user(username: str, password: str):
     return None
 
 def authenticate_client(client_id: str, password: str):
-    """Authenticate client using client_id and fixed password"""
-    if password != "123456":
+    """Authenticate client using client_id and password from Google Sheets only (no hardcoded values)"""
+    clients = load_clients()
+    
+    # Normalize input
+    client_id_normalized = str(client_id).strip() if client_id else ""
+    password_normalized = str(password).strip() if password else ""
+    
+    if not client_id_normalized or not password_normalized:
         return None
     
-    clients = load_clients()
     for client in clients:
-        if client["id"] == client_id:
-            # Return a user-like dict for token generation
-            return {
-                "username": client_id,
-                "role": "client",
-                "client_id": client_id,
-                "client_name": client.get("name", "")
-            }
+        if str(client.get("id") or "").strip() == client_id_normalized:
+            # Get stored password from Google Sheets (must be hashed)
+            stored_password = str(client.get("password") or "").strip()
+            
+            # Client must have a password stored in Google Sheets - no hardcoded fallback
+            if not stored_password:
+                return None
+            
+            # Verify password using secure comparison (handles bcrypt hashed passwords)
+            if verify_password(password_normalized, stored_password):
+                # Return a user-like dict for token generation
+                return {
+                    "username": client_id,
+                    "role": "client",
+                    "client_id": client_id,
+                    "client_name": client.get("name", "")
+                }
     return None
 
 
@@ -463,7 +509,7 @@ async def login(credentials: LoginRequest):
 
 @app.post("/api/client-login")
 async def client_login(credentials: LoginRequest):
-    """Client login endpoint - uses client_id as username and fixed password 123456"""
+    """Client login endpoint - authenticates using client_id and password from Google Sheets only"""
     client = authenticate_client(credentials.username, credentials.password)
     if not client:
         raise HTTPException(status_code=401, detail="Invalid client credentials")
@@ -531,7 +577,7 @@ async def update_user(username: str, user_update: dict):
     raise HTTPException(status_code=404, detail="User not found")
 
 @app.delete("/api/users/{username}")
-async def delete_user(username: str):
+async def delete_user_endpoint(username: str):
     """Delete a user (admin/developer only)"""
     users = load_users()
     
@@ -544,8 +590,8 @@ async def delete_user(username: str):
     if not user_exists:
         raise HTTPException(status_code=404, detail="User not found")
     
-    users = [u for u in users if u["username"] != username]
-    save_users(users)
+    # Delete from Supabase
+    delete_user(username)
     
     return {"message": "User deleted successfully"}
 
@@ -599,305 +645,731 @@ async def delete_schedule_endpoint(schedule_id: str):
             return {"message": "Schedule deleted"}
     raise HTTPException(status_code=404, detail="Schedule not found")
 
-@app.get("/api/dispensers")
-async def get_dispensers():
-    """Get all dispensers - merges installed machines from dispensers.json and assigned machines from client_machines.json"""
-    installed_machines = load_dispensers()
+# ============================================================================
+# Machine Templates Endpoints (New - SKU Specifications)
+# ============================================================================
+
+@app.get("/api/machine-templates")
+async def get_machine_templates():
+    """Get all machine templates (SKU specifications)"""
+    templates = load_machine_templates()
+    return templates
+
+@app.get("/api/machine-templates/{template_id}")
+async def get_machine_template(template_id: str):
+    """Get a specific machine template"""
+    templates = load_machine_templates()
+    for template in templates:
+        if template.get("id") == template_id:
+            return template
+    raise HTTPException(status_code=404, detail="Machine template not found")
+
+@app.post("/api/machine-templates")
+async def create_machine_template(template: MachineTemplate):
+    """Create a new machine template (SKU specification)"""
+    templates = load_machine_templates()
+    
+    # Check for duplicate SKU
+    for existing in templates:
+        if existing.get("sku") == template.sku:
+            raise HTTPException(
+                status_code=400,
+                detail=f"SKU '{template.sku}' already exists. SKU must be unique."
+            )
+    
+    # Convert to dict
+    try:
+        if hasattr(template, 'model_dump'):
+            template_dict = template.model_dump(exclude_none=False)
+        else:
+            template_dict = template.dict(exclude_none=False)
+    except:
+        template_dict = template.dict(exclude_none=False)
+    
+    templates.append(template_dict)
+    save_machine_templates(templates)
+    return template_dict
+
+@app.put("/api/machine-templates/{template_id}")
+async def update_machine_template(template_id: str, template: MachineTemplate):
+    """Update a machine template"""
+    templates = load_machine_templates()
+    
+    # Find template
+    template_index = None
+    for i, t in enumerate(templates):
+        if t.get("id") == template_id:
+            template_index = i
+            break
+    
+    if template_index is None:
+        raise HTTPException(status_code=404, detail="Machine template not found")
+    
+    # Check for duplicate SKU (excluding current template)
+    for existing in templates:
+        if existing.get("sku") == template.sku and existing.get("id") != template_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"SKU '{template.sku}' already exists. SKU must be unique."
+            )
+    
+    # Convert to dict
+    try:
+        if hasattr(template, 'model_dump'):
+            template_dict = template.model_dump(exclude_none=False)
+        else:
+            template_dict = template.dict(exclude_none=False)
+    except:
+        template_dict = template.dict(exclude_none=False)
+    
+    template_dict["id"] = template_id
+    templates[template_index] = template_dict
+    save_machine_templates(templates)
+    return template_dict
+
+@app.delete("/api/machine-templates/{template_id}")
+async def delete_machine_template_endpoint(template_id: str):
+    """Delete a machine template - only if no instances exist"""
+    try:
+        templates = load_machine_templates()
+        instances = load_machine_instances()
+        
+        # Check if any instances use this template
+        instances_using_template = [i for i in instances if i.get("template_id") == template_id]
+        if instances_using_template:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete template. {len(instances_using_template)} machine instance(s) are using this template."
+            )
+        
+        # Delete from Supabase
+        delete_machine_template(template_id)
+        return {"message": "Machine template deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e) if str(e) else "Unknown error"
+        print(f"Error deleting machine template {template_id}: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"Error deleting machine template: {error_msg}")
+
+# ============================================================================
+# Machine Instances Endpoints (New - Installed Machines)
+# ============================================================================
+
+@app.get("/api/machine-instances")
+async def get_machine_instances():
+    """Get all machine instances (installed machines)"""
+    instances = load_machine_instances()
     client_machines_data = load_client_machines()
     assigned_machines = client_machines_data.get("client_machines", [])
     
-    # Merge both lists
-    all_dispensers = installed_machines + assigned_machines
+    # Merge instances with assigned machines (for backward compatibility)
+    all_instances = instances + assigned_machines
+    return all_instances
+
+@app.get("/api/machine-instances/{instance_id}")
+async def get_machine_instance(instance_id: str):
+    """Get a specific machine instance"""
+    instances = load_machine_instances()
+    client_machines_data = load_client_machines()
+    
+    # Check instances first
+    for instance in instances:
+        if instance.get("id") == instance_id:
+            return instance
+    
+    # Check assigned machines
+    for instance in client_machines_data.get("client_machines", []):
+        if instance.get("id") == instance_id:
+            return instance
+    
+    raise HTTPException(status_code=404, detail="Machine instance not found")
+
+@app.post("/api/machine-instances")
+async def create_machine_instance(instance: MachineInstance):
+    """Create a new machine instance (installed machine)"""
+    instances = load_machine_instances()
+    client_machines_data = load_client_machines()
+    
+    # Verify template exists if template_id is provided
+    if instance.template_id:
+        templates = load_machine_templates()
+        template_exists = any(t.get("id") == instance.template_id for t in templates)
+        if not template_exists:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Template '{instance.template_id}' not found"
+            )
+    
+    # Check for duplicate unique_code
+    all_instances = instances + client_machines_data.get("client_machines", [])
+    for existing in all_instances:
+        if existing.get("unique_code") == instance.unique_code:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Code '{instance.unique_code}' already exists. Code must be unique."
+            )
+    
+    # Convert to dict
+    try:
+        if hasattr(instance, 'model_dump'):
+            instance_dict = instance.model_dump(exclude_none=False)
+        else:
+            instance_dict = instance.dict(exclude_none=False)
+    except:
+        instance_dict = instance.dict(exclude_none=False)
+    
+    # Route based on status
+    status = instance.status or "installed"
+    if status == "assigned":
+        if "client_machines" not in client_machines_data:
+            client_machines_data["client_machines"] = []
+        instance_dict["status"] = "assigned"
+        client_machines_data["client_machines"].append(instance_dict)
+        save_client_machines(client_machines_data)
+    else:
+        instances.append(instance_dict)
+        save_machine_instances(instances)
+    
+    return instance_dict
+
+@app.put("/api/machine-instances/{instance_id}")
+async def update_machine_instance(instance_id: str, instance: MachineInstance):
+    """Update a machine instance"""
+    instances = load_machine_instances()
+    client_machines_data = load_client_machines()
+    
+    # Find instance
+    instance_index = None
+    in_client_machines = False
+    
+    # Check client_machines first
+    for i, inst in enumerate(client_machines_data.get("client_machines", [])):
+        if inst.get("id") == instance_id:
+            instance_index = i
+            in_client_machines = True
+            break
+    
+    # Check instances if not found
+    if instance_index is None:
+        for i, inst in enumerate(instances):
+            if inst.get("id") == instance_id:
+                instance_index = i
+                break
+    
+    if instance_index is None:
+        raise HTTPException(status_code=404, detail="Machine instance not found")
+    
+    # Check for duplicate unique_code (excluding current instance)
+    all_instances = instances + client_machines_data.get("client_machines", [])
+    for existing in all_instances:
+        if existing.get("unique_code") == instance.unique_code and existing.get("id") != instance_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Code '{instance.unique_code}' already exists. Code must be unique."
+            )
+    
+    # Prevent changing client_id
+    original_instance = None
+    if in_client_machines:
+        original_instance = client_machines_data.get("client_machines", [])[instance_index]
+    else:
+        original_instance = instances[instance_index]
+    
+    if original_instance and original_instance.get("client_id"):
+        if instance.client_id != original_instance.get("client_id"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot change machine's client. Machine belongs to client '{original_instance.get('client_id')}'."
+            )
+    
+    # Convert to dict
+    try:
+        if hasattr(instance, 'model_dump'):
+            instance_dict = instance.model_dump(exclude_none=False)
+        else:
+            instance_dict = instance.dict(exclude_none=False)
+    except:
+        instance_dict = instance.dict(exclude_none=False)
+    
+    instance_dict["id"] = instance_id
+    
+    # Handle status changes (move between files)
+    new_status = instance.status or "installed"
+    was_assigned = in_client_machines
+    will_be_assigned = new_status == "assigned"
+    
+    if was_assigned and not will_be_assigned:
+        # Move from client_machines to instances
+        client_machines_data["client_machines"].pop(instance_index)
+        save_client_machines(client_machines_data)
+        instances.append(instance_dict)
+        save_machine_instances(instances)
+    elif not was_assigned and will_be_assigned:
+        # Move from instances to client_machines
+        instances.pop(instance_index)
+        save_machine_instances(instances)
+        if "client_machines" not in client_machines_data:
+            client_machines_data["client_machines"] = []
+        client_machines_data["client_machines"].append(instance_dict)
+        save_client_machines(client_machines_data)
+    else:
+        # Update in place
+        if in_client_machines:
+            client_machines_data["client_machines"][instance_index] = instance_dict
+            save_client_machines(client_machines_data)
+        else:
+            instances[instance_index] = instance_dict
+            save_machine_instances(instances)
+    
+    return instance_dict
+
+@app.delete("/api/machine-instances/{instance_id}")
+async def delete_machine_instance_endpoint(instance_id: str):
+    """Delete a machine instance"""
+    instances = load_machine_instances()
+    client_machines_data = load_client_machines()
+    
+    # Check and remove from client_machines
+    client_machines = client_machines_data.get("client_machines", [])
+    found_in_client_machines = any(i.get("id") == instance_id for i in client_machines)
+    
+    if found_in_client_machines:
+        # Delete from Supabase (client_machines are just instances with status="assigned")
+        delete_machine_instance(instance_id)
+        # Also delete associated refill logs
+        delete_refill_logs_by_dispenser(instance_id)
+        return {"message": "Machine instance deleted successfully"}
+    
+    # Check and remove from instances
+    instance_to_delete = None
+    for i in instances:
+        if i.get("id") == instance_id:
+            instance_to_delete = i
+            break
+    
+    if not instance_to_delete:
+        raise HTTPException(status_code=404, detail="Machine instance not found")
+    
+    # Delete from Supabase
+    delete_machine_instance(instance_id)
+    
+    # Remove associated refill logs
+    delete_refill_logs_by_dispenser(instance_id)
+    
+    return {"message": "Machine instance deleted successfully"}
+
+# ============================================================================
+# Legacy Dispensers Endpoints (Backward Compatibility)
+# ============================================================================
+
+@app.get("/api/dispensers")
+async def get_dispensers():
+    """Get all dispensers - returns templates + instances merged (backward compatibility)"""
+    templates = load_machine_templates()
+    instances = load_machine_instances()
+    client_machines_data = load_client_machines()
+    assigned_machines = client_machines_data.get("client_machines", [])
+    
+    # Merge templates and instances for backward compatibility
+    # Convert templates to dispenser format
+    template_dispensers = []
+    for template in templates:
+        template_dispensers.append({
+            "id": template.get("id"),
+            "name": template.get("name"),
+            "sku": template.get("sku"),
+            "location": "",
+            "client_id": None,
+            "current_schedule_id": None,
+            "refill_capacity_ml": template.get("refill_capacity_ml"),
+            "current_level_ml": 0,
+            "last_refill_date": None,
+            "installation_date": None,
+            "fragrance_code": None,
+            "ml_per_hour": template.get("ml_per_hour"),
+            "unique_code": template.get("sku"),
+            "status": None
+        })
+    
+    # Merge all
+    all_dispensers = template_dispensers + instances + assigned_machines
     return all_dispensers
 
 @app.get("/api/dispensers/{dispenser_id}")
 async def get_dispenser(dispenser_id: str):
-    """Get a specific dispenser - checks both dispensers.json and client_machines.json"""
-    installed_machines = load_dispensers()
-    client_machines_data = load_client_machines()
+    """Get a specific dispenser - checks templates, instances, and client_machines (backward compatibility)"""
+    # Check templates first
+    templates = load_machine_templates()
+    for template in templates:
+        if template.get("id") == dispenser_id:
+            # Convert to dispenser format
+            return {
+                "id": template.get("id"),
+                "name": template.get("name"),
+                "sku": template.get("sku"),
+                "location": "",
+                "client_id": None,
+                "current_schedule_id": None,
+                "refill_capacity_ml": template.get("refill_capacity_ml"),
+                "current_level_ml": 0,
+                "last_refill_date": None,
+                "installation_date": None,
+                "fragrance_code": None,
+                "ml_per_hour": template.get("ml_per_hour"),
+                "unique_code": template.get("sku"),
+                "status": None
+            }
     
-    # Check installed machines first
-    for dispenser in installed_machines:
-        if dispenser["id"] == dispenser_id:
-            return dispenser
+    # Check instances
+    instances = load_machine_instances()
+    for instance in instances:
+        if instance.get("id") == dispenser_id:
+            return instance
     
     # Check assigned machines
-    for dispenser in client_machines_data.get("client_machines", []):
-        if dispenser["id"] == dispenser_id:
-            return dispenser
+    client_machines_data = load_client_machines()
+    for instance in client_machines_data.get("client_machines", []):
+        if instance.get("id") == dispenser_id:
+            return instance
     
     raise HTTPException(status_code=404, detail="Dispenser not found")
 
 @app.post("/api/dispensers")
 async def create_dispenser(dispenser: Dispenser):
-    """Create a dispenser - routes to client_machines.json if status is 'assigned', otherwise to dispensers.json
-    If creating an installed machine with a code that exists in assigned machines, automatically updates/moves it"""
-    installed_machines = load_dispensers()
+    """Create a dispenser - routes to templates or instances based on client_id (backward compatibility)
+    If no client_id, creates template. If client_id exists, creates instance."""
+    instances = load_machine_instances()
+    templates = load_machine_templates()
     client_machines_data = load_client_machines()
     
-    # Convert to dict and check status - include all fields even if None
-    # Handle both Pydantic v1 (dict()) and v2 (model_dump())
+    # Convert to dict
     try:
         if hasattr(dispenser, 'model_dump'):
             dispenser_dict = dispenser.model_dump(exclude_none=False)
         else:
             dispenser_dict = dispenser.dict(exclude_none=False)
     except:
-        # Fallback to dict() if model_dump() fails
         dispenser_dict = dispenser.dict(exclude_none=False)
     
-    # Get status from the dict (this should have the actual value sent)
-    # Check both the dict and the model attribute, normalize the string
-    status = dispenser_dict.get("status")
-    if status is None:
-        status = dispenser.status
+    # Determine if it's a template (no client_id) or instance (has client_id)
+    client_id = dispenser_dict.get("client_id") or ""
+    has_client = bool(client_id and client_id.strip())
     
-    # Normalize status string (strip whitespace, convert to lowercase for comparison)
-    status_normalized = str(status).strip().lower() if status else None
-    
-    # Check for duplicate unique_code
-    # Special case: If installing a machine (status='installed') and the code exists in assigned machines,
-    # automatically update/move it instead of rejecting
-    existing_assigned_machine = None
-    existing_assigned_index = None
-    
-    # Check in client_machines.json for assigned machine with same code
-    for i, existing_dispenser in enumerate(client_machines_data.get("client_machines", [])):
-        if existing_dispenser.get("unique_code") == dispenser.unique_code:
-            existing_assigned_machine = existing_dispenser
-            existing_assigned_index = i
-            break
-    
-    # If installing and found an assigned machine with same code, update it instead of creating new
-    if status_normalized == "installed" and existing_assigned_machine:
-        # Update the existing assigned machine to installed status
-        # Merge the new installation data with existing machine data
-        dispenser_dict["id"] = existing_assigned_machine["id"]  # Keep the same ID
-        # Remove from client_machines.json
-        client_machines_data["client_machines"].pop(existing_assigned_index)
-        save_client_machines(client_machines_data)
-        # Add to dispensers.json as installed
-        installed_machines.append(dispenser_dict)
-        save_dispensers(installed_machines)
-        return dispenser_dict
-    
-    # Check for duplicate unique_code in both files (normal case)
-    all_dispensers = installed_machines + client_machines_data.get("client_machines", [])
-    for existing_dispenser in all_dispensers:
-        if existing_dispenser.get("unique_code") == dispenser.unique_code:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Code '{dispenser.unique_code}' already exists. Code must be unique."
-            )
-    
-    # Route to appropriate file based on status
-    # If status is 'assigned', save to client_machines.json
-    if status_normalized == "assigned":
-        # Save to client_machines.json
-        if "client_machines" not in client_machines_data:
-            client_machines_data["client_machines"] = []
-        # Ensure status is explicitly set to 'assigned'
-        dispenser_dict["status"] = "assigned"
-        client_machines_data["client_machines"].append(dispenser_dict)
-        save_client_machines(client_machines_data)
+    if not has_client:
+        # It's a template - create in machine_templates
+        # Check for duplicate SKU
+        for existing in templates:
+            if existing.get("sku") == dispenser.sku:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"SKU '{dispenser.sku}' already exists. SKU must be unique."
+                )
+        
+        template_dict = {
+            "id": f"template_{dispenser.sku.replace(' ', '_').replace('-', '_').upper()}",
+            "sku": dispenser.sku,
+            "name": dispenser.name,
+            "refill_capacity_ml": dispenser.refill_capacity_ml,
+            "ml_per_hour": dispenser.ml_per_hour,
+            "description": None
+        }
+        templates.append(template_dict)
+        save_machine_templates(templates)
+        return dispenser_dict  # Return original format for backward compatibility
     else:
-        # Save to dispensers.json (installed machines or SKU templates)
-        installed_machines.append(dispenser_dict)
-        save_dispensers(installed_machines)
+        # It's an instance - create in machine_instances
+        # Check for duplicate unique_code
+        all_instances = instances + client_machines_data.get("client_machines", [])
+        for existing in all_instances:
+            if existing.get("unique_code") == dispenser.unique_code:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Code '{dispenser.unique_code}' already exists. Code must be unique."
+                )
     
-    return dispenser_dict
+        # Find template_id from SKU if not provided
+        template_id = None
+        if dispenser.sku:
+            for template in templates:
+                if template.get("sku") == dispenser.sku:
+                    template_id = template.get("id")
+                    break
+        
+        instance_dict = {
+            "id": dispenser.id,
+            "template_id": template_id,
+            "sku": dispenser.sku,
+            "client_id": client_id,
+            "location": dispenser.location,
+            "unique_code": dispenser.unique_code,
+            "current_schedule_id": dispenser_dict.get("current_schedule_id"),
+            "refill_capacity_ml": dispenser.refill_capacity_ml,
+            "ml_per_hour": dispenser.ml_per_hour,
+            "current_level_ml": dispenser_dict.get("current_level_ml", 0),
+            "last_refill_date": dispenser_dict.get("last_refill_date"),
+            "installation_date": dispenser_dict.get("installation_date"),
+            "fragrance_code": dispenser_dict.get("fragrance_code"),
+            "status": dispenser_dict.get("status", "installed")
+        }
+        
+        # Route based on status
+        status = instance_dict.get("status", "installed")
+        if status == "assigned":
+            if "client_machines" not in client_machines_data:
+                client_machines_data["client_machines"] = []
+            client_machines_data["client_machines"].append(instance_dict)
+            save_client_machines(client_machines_data)
+        else:
+            instances.append(instance_dict)
+            save_machine_instances(instances)
+        
+        return dispenser_dict  # Return original format for backward compatibility
 
 @app.put("/api/dispensers/{dispenser_id}")
 async def update_dispenser(dispenser_id: str, dispenser: Dispenser):
-    """Update a dispenser - handles moving between files if status changes"""
-    installed_machines = load_dispensers()
+    """Update a dispenser - routes to templates or instances based on type (backward compatibility)"""
+    templates = load_machine_templates()
+    instances = load_machine_instances()
     client_machines_data = load_client_machines()
     
-    # Find the dispenser in either file
-    dispenser_index = None
+    # Check if it's a template first
+    template_index = None
+    for i, t in enumerate(templates):
+        if t.get("id") == dispenser_id:
+            template_index = i
+            break
+    
+    if template_index is not None:
+        # It's a template - update it
+        # Check for duplicate SKU
+        for existing in templates:
+            if existing.get("sku") == dispenser.sku and existing.get("id") != dispenser_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"SKU '{dispenser.sku}' already exists. SKU must be unique."
+                )
+        
+        template_dict = {
+            "id": dispenser_id,
+            "sku": dispenser.sku,
+            "name": dispenser.name,
+            "refill_capacity_ml": dispenser.refill_capacity_ml,
+            "ml_per_hour": dispenser.ml_per_hour,
+            "description": None
+        }
+        templates[template_index] = template_dict
+        save_machine_templates(templates)
+        return dispenser_dict  # Return original format
+    
+    # It's an instance - find it
+    instance_index = None
     in_client_machines = False
     
-    # Check client_machines.json first
-    for i, d in enumerate(client_machines_data.get("client_machines", [])):
-        if d["id"] == dispenser_id:
-            dispenser_index = i
+    # Check client_machines first
+    for i, inst in enumerate(client_machines_data.get("client_machines", [])):
+        if inst.get("id") == dispenser_id:
+            instance_index = i
             in_client_machines = True
             break
     
-    # Check dispensers.json if not found
-    if dispenser_index is None:
-        for i, d in enumerate(installed_machines):
-            if d["id"] == dispenser_id:
-                dispenser_index = i
+    # Check instances if not found
+    if instance_index is None:
+        for i, inst in enumerate(instances):
+            if inst.get("id") == dispenser_id:
+                instance_index = i
                 break
     
-    if dispenser_index is None:
+    if instance_index is None:
         raise HTTPException(status_code=404, detail="Dispenser not found")
     
-    # Check for duplicate unique_code (excluding the current dispenser)
-    all_dispensers = installed_machines + client_machines_data.get("client_machines", [])
-    for existing_dispenser in all_dispensers:
-        if (existing_dispenser.get("unique_code") == dispenser.unique_code and 
-            existing_dispenser.get("id") != dispenser_id):
+    # Check for duplicate unique_code (excluding current instance)
+    all_instances = instances + client_machines_data.get("client_machines", [])
+    for existing in all_instances:
+        if existing.get("unique_code") == dispenser.unique_code and existing.get("id") != dispenser_id:
             raise HTTPException(
                 status_code=400, 
                 detail=f"Code '{dispenser.unique_code}' already exists. Code must be unique."
             )
     
-    # Convert to dict - include all fields even if None
-    # Handle both Pydantic v1 (dict()) and v2 (model_dump())
+    # Convert to dict
     try:
         if hasattr(dispenser, 'model_dump'):
             dispenser_dict = dispenser.model_dump(exclude_none=False)
         else:
             dispenser_dict = dispenser.dict(exclude_none=False)
     except:
-        # Fallback to dict() if model_dump() fails
         dispenser_dict = dispenser.dict(exclude_none=False)
     dispenser_dict["id"] = dispenser_id
     
-    # Prevent changing client_id to a different client (security check)
-    # Get the original machine to check its client_id
-    original_machine = None
+    # Prevent changing client_id
+    original_instance = None
     if in_client_machines:
-        original_machine = client_machines_data.get("client_machines", [])[dispenser_index]
+        original_instance = client_machines_data.get("client_machines", [])[instance_index]
     else:
-        original_machine = installed_machines[dispenser_index]
+        original_instance = instances[instance_index]
     
-    # If machine has a client_id, don't allow changing it to a different client
-    if original_machine and original_machine.get("client_id"):
-        if dispenser_dict.get("client_id") and dispenser_dict.get("client_id") != original_machine.get("client_id"):
+    if original_instance and original_instance.get("client_id"):
+        if dispenser_dict.get("client_id") and dispenser_dict.get("client_id") != original_instance.get("client_id"):
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot change machine's client. Machine belongs to client '{original_machine.get('client_id')}'."
+                detail=f"Cannot change machine's client. Machine belongs to client '{original_instance.get('client_id')}'."
             )
     
-    # Determine where to save based on new status
-    new_status = dispenser.status
+    # Find template_id from SKU
+    template_id = None
+    if dispenser.sku:
+        for template in templates:
+            if template.get("sku") == dispenser.sku:
+                template_id = template.get("id")
+                break
+    
+    instance_dict = {
+        "id": dispenser_id,
+        "template_id": template_id,
+        "sku": dispenser.sku,
+        "client_id": dispenser_dict.get("client_id"),
+        "location": dispenser.location,
+        "unique_code": dispenser.unique_code,
+        "current_schedule_id": dispenser_dict.get("current_schedule_id"),
+        "refill_capacity_ml": dispenser.refill_capacity_ml,
+        "ml_per_hour": dispenser.ml_per_hour,
+        "current_level_ml": dispenser_dict.get("current_level_ml", 0),
+        "last_refill_date": dispenser_dict.get("last_refill_date"),
+        "installation_date": dispenser_dict.get("installation_date"),
+        "fragrance_code": dispenser_dict.get("fragrance_code"),
+        "status": dispenser_dict.get("status", "installed")
+    }
+    
+    # Handle status changes
+    new_status = instance_dict.get("status", "installed")
     was_assigned = in_client_machines
     will_be_assigned = new_status == "assigned"
     
-    # If status changed from assigned to installed (or vice versa), move between files
     if was_assigned and not will_be_assigned:
-        # Moving from client_machines.json to dispensers.json
-        # Remove from client_machines
-        client_machines_data["client_machines"].pop(dispenser_index)
+        client_machines_data["client_machines"].pop(instance_index)
         save_client_machines(client_machines_data)
-        # Add to dispensers.json
-        installed_machines.append(dispenser_dict)
-        save_dispensers(installed_machines)
+        instances.append(instance_dict)
+        save_machine_instances(instances)
     elif not was_assigned and will_be_assigned:
-        # Moving from dispensers.json to client_machines.json
-        # Remove from dispensers.json
-        installed_machines.pop(dispenser_index)
-        save_dispensers(installed_machines)
-        # Add to client_machines
+        instances.pop(instance_index)
+        save_machine_instances(instances)
         if "client_machines" not in client_machines_data:
             client_machines_data["client_machines"] = []
-        client_machines_data["client_machines"].append(dispenser_dict)
+        client_machines_data["client_machines"].append(instance_dict)
         save_client_machines(client_machines_data)
     else:
-        # Status unchanged, update in place
         if in_client_machines:
-            client_machines_data["client_machines"][dispenser_index] = dispenser_dict
+            client_machines_data["client_machines"][instance_index] = instance_dict
             save_client_machines(client_machines_data)
         else:
-            installed_machines[dispenser_index] = dispenser_dict
-            save_dispensers(installed_machines)
+            instances[instance_index] = instance_dict
+            save_machine_instances(instances)
     
-    return dispenser_dict
+    return dispenser_dict  # Return original format for backward compatibility
 
 @app.delete("/api/dispensers/{dispenser_id}")
 async def delete_dispenser(dispenser_id: str):
-    """Delete a machine/dispenser - checks both files and completely removes it"""
-    installed_machines = load_dispensers()
-    client_machines_data = load_client_machines()
-    
-    # Check and remove from client_machines.json (assigned machines)
-    client_machines = client_machines_data.get("client_machines", [])
-    found_in_client_machines = any(d["id"] == dispenser_id for d in client_machines)
-    
-    if found_in_client_machines:
-        client_machines_data["client_machines"] = [d for d in client_machines if d["id"] != dispenser_id]
-        save_client_machines(client_machines_data)
+    """Delete a machine/dispenser - routes to templates or instances (backward compatibility)"""
+    try:
+        templates = load_machine_templates()
+        instances = load_machine_instances()
+        client_machines_data = load_client_machines()
+        
+        # Check if it's a template
+        template_found = any(t.get("id") == dispenser_id for t in templates)
+        if template_found:
+            # Check if any instances use this template
+            instances_using_template = [i for i in instances if i.get("template_id") == dispenser_id]
+            if instances_using_template:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot delete template. {len(instances_using_template)} machine instance(s) are using this template."
+                )
+            # Delete from Supabase
+            delete_machine_template(dispenser_id)
+            return {"message": "Dispenser deleted successfully"}
+        
+        # Check and remove from client_machines
+        client_machines = client_machines_data.get("client_machines", [])
+        found_in_client_machines = any(i.get("id") == dispenser_id for i in client_machines)
+        
+        if found_in_client_machines:
+            # Delete from Supabase (client_machines are just instances with status="assigned")
+            delete_machine_instance(dispenser_id)
+            # Also delete associated refill logs
+            delete_refill_logs_by_dispenser(dispenser_id)
+            return {"message": "Dispenser deleted successfully"}
+        
+        # Check and remove from instances
+        instance_found = any(i.get("id") == dispenser_id for i in instances)
+        if not instance_found:
+            raise HTTPException(status_code=404, detail="Dispenser not found")
+        
+        # Delete from Supabase
+        delete_machine_instance(dispenser_id)
+        
+        # Remove associated refill logs
+        delete_refill_logs_by_dispenser(dispenser_id)
+        
         return {"message": "Dispenser deleted successfully"}
-    
-    # Check and remove from dispensers.json (installed machines or SKU templates)
-    dispenser_to_delete = None
-    for d in installed_machines:
-        if d["id"] == dispenser_id:
-            dispenser_to_delete = d
-            break
-    
-    if not dispenser_to_delete:
-        raise HTTPException(status_code=404, detail="Dispenser not found")
-    
-    # IMPORTANT: Only allow deleting SKU templates (machines without client_id)
-    # Installed machines (with client_id) should NOT be deleted - they should be uninstalled/removed from client instead
-    # But if user explicitly wants to delete, we'll allow it and completely remove it
-    # Remove dispenser completely - do NOT convert it back to SKU template
-    installed_machines = [d for d in installed_machines if d["id"] != dispenser_id]
-    save_dispensers(installed_machines)
-    
-    # Also remove associated refill logs for this dispenser (only if there are any)
-    refill_logs = load_refill_logs()
-    refills_to_remove = [r for r in refill_logs if r.get("dispenser_id") == dispenser_id]
-    if refills_to_remove:
-        refill_logs = [r for r in refill_logs if r.get("dispenser_id") != dispenser_id]
-        save_refill_logs(refill_logs)
-    
-    return {"message": "Dispenser deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e) if str(e) else "Unknown error"
+        print(f"Error deleting dispenser {dispenser_id}: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"Error deleting dispenser: {error_msg}")
 
 @app.post("/api/dispensers/{dispenser_id}/assign-schedule")
 async def assign_schedule(dispenser_id: str, body: dict):
-    """Assign a schedule to a dispenser - checks both files"""
+    """Assign a schedule to a machine instance (backward compatibility)"""
     schedule_id = body.get("schedule_id") or body.get("scheduleId")
-    # Convert empty string to None
     if schedule_id == "":
         schedule_id = None
-    installed_machines = load_dispensers()
+    
+    instances = load_machine_instances()
     client_machines_data = load_client_machines()
     
-    # Check client_machines.json first
-    for i, d in enumerate(client_machines_data.get("client_machines", [])):
-        if d["id"] == dispenser_id:
+    # Check client_machines first
+    for i, inst in enumerate(client_machines_data.get("client_machines", [])):
+        if inst.get("id") == dispenser_id:
             client_machines_data["client_machines"][i]["current_schedule_id"] = schedule_id
             save_client_machines(client_machines_data)
             return client_machines_data["client_machines"][i]
     
-    # Check dispensers.json
-    for i, d in enumerate(installed_machines):
-        if d["id"] == dispenser_id:
-            installed_machines[i]["current_schedule_id"] = schedule_id
-            save_dispensers(installed_machines)
-            return installed_machines[i]
+    # Check instances
+    for i, inst in enumerate(instances):
+        if inst.get("id") == dispenser_id:
+            instances[i]["current_schedule_id"] = schedule_id
+            save_machine_instances(instances)
+            return instances[i]
     
-    raise HTTPException(status_code=404, detail="Dispenser not found")
+    raise HTTPException(status_code=404, detail="Machine instance not found")
 
 @app.post("/api/dispensers/{dispenser_id}/refill")
 async def log_refill(dispenser_id: str, refill: RefillLog):
-    """Log a refill - checks both files, but refills should only be for installed machines"""
-    installed_machines = load_dispensers()
+    """Log a refill - works with machine instances only (backward compatibility)"""
+    instances = load_machine_instances()
     client_machines_data = load_client_machines()
     
-    # Find dispenser in both files
+    # Find instance in both files
     dispenser = None
     in_client_machines = False
     dispenser_index = None
     
-    # Check client_machines.json first
-    for i, d in enumerate(client_machines_data.get("client_machines", [])):
-        if d["id"] == dispenser_id:
-            dispenser = d
+    # Check client_machines first
+    for i, inst in enumerate(client_machines_data.get("client_machines", [])):
+        if inst.get("id") == dispenser_id:
+            dispenser = inst
             in_client_machines = True
             dispenser_index = i
             break
     
-    # Check dispensers.json if not found
+    # Check instances if not found
     if not dispenser:
-        for i, d in enumerate(installed_machines):
-            if d["id"] == dispenser_id:
-                dispenser = d
+        for i, inst in enumerate(instances):
+            if inst.get("id") == dispenser_id:
+                dispenser = inst
                 dispenser_index = i
                 break
     
@@ -965,16 +1437,16 @@ async def log_refill(dispenser_id: str, refill: RefillLog):
     print(f"  - Calculated current_ml_refill: {current_ml_refill}")
     print(f"  - Adding ml refill: {refill_amount}, capacity: {refill_capacity}")
     
-    # Update dispenser level using current_ml_refill (ensure it's stored as float, not string)
+    # Update instance level using current_ml_refill (ensure it's stored as float, not string)
     # This ensures we use the calculated value from frontend which uses level_before_refill
     if in_client_machines:
         client_machines_data["client_machines"][dispenser_index]["current_level_ml"] = float(current_ml_refill)
         client_machines_data["client_machines"][dispenser_index]["last_refill_date"] = refill.timestamp
         save_client_machines(client_machines_data)
     else:
-        installed_machines[dispenser_index]["current_level_ml"] = float(current_ml_refill)
-        installed_machines[dispenser_index]["last_refill_date"] = refill.timestamp
-        save_dispensers(installed_machines)
+        instances[dispenser_index]["current_level_ml"] = float(current_ml_refill)
+        instances[dispenser_index]["last_refill_date"] = refill.timestamp
+        save_machine_instances(instances)
     
     # Count number of refills done for this machine (number_of_refills_done)
     existing_refills = load_refill_logs()
@@ -1069,15 +1541,35 @@ async def get_refill_logs(request: Request):
     return refill_logs
 
 @app.get("/api/clients")
-async def get_clients():
-    return load_clients()
+async def get_clients(request: Request):
+    """Get all clients - exclude hashed password, but include plain password for admins"""
+    user = getattr(request.state, "user", None)
+    clients = load_clients()
+    
+    # For admins/developers, include password_plain for client management
+    # For others, exclude both password fields
+    if user and user.get("role") in ["admin", "developer"]:
+        # Admins can see plain passwords for client management
+        return [{k: v for k, v in client.items() if k != 'password'} for client in clients]
+    else:
+        # Others cannot see any password information
+        return [{k: v for k, v in client.items() if k not in ['password', 'password_plain']} for client in clients]
 
 @app.get("/api/clients/{client_id}")
-async def get_client(client_id: str):
+async def get_client(client_id: str, request: Request):
+    """Get a specific client - exclude password field for security, but include plain password for admins"""
+    user = getattr(request.state, "user", None)
     clients = load_clients()
     for client in clients:
         if client["id"] == client_id:
-            return client
+            # For admins/developers, include password_plain for client management
+            # For others, exclude both password fields
+            if user and user.get("role") in ["admin", "developer"]:
+                # Admins can see plain passwords for client management
+                return {k: v for k, v in client.items() if k != 'password'}
+            else:
+                # Others cannot see any password information
+                return {k: v for k, v in client.items() if k not in ['password', 'password_plain']}
     raise HTTPException(status_code=404, detail="Client not found")
 
 @app.post("/api/clients")
@@ -1124,105 +1616,196 @@ async def create_client(client: Client):
             client_id = f"{base_client_id}{int(time.time()) % 10000:04d}"
             break
     
-    client_dict = client.dict()
+    # Generate secure random password (8 characters: 2 uppercase, 2 lowercase, 2 digits, 2 special)
+    import string
+    import random
+    uppercase = random.choices(string.ascii_uppercase, k=2)
+    lowercase = random.choices(string.ascii_lowercase, k=2)
+    digits = random.choices(string.digits, k=2)
+    special = random.choices("!@#$%&*", k=2)
+    password_chars = uppercase + lowercase + digits + special
+    random.shuffle(password_chars)
+    generated_password = ''.join(password_chars)
+    
+    # Hash the password before storing
+    hashed_password = hash_password(generated_password)
+    
+    client_dict = client.dict(exclude={'password', 'password_plain'})  # Exclude password fields from input
     client_dict["id"] = client_id
+    client_dict["password"] = hashed_password  # Store hashed password
+    client_dict["password_plain"] = generated_password  # Store plain password (for admin retrieval)
     existing_clients.append(client_dict)
     save_clients(existing_clients)
-    return client_dict
+    
+    # Return client with plain password for display (only on creation)
+    response_dict = client_dict.copy()
+    response_dict["generated_password"] = generated_password  # Include plain password in response
+    return response_dict
 
 @app.put("/api/clients/{client_id}")
 async def update_client(client_id: str, client: Client):
+    """Update a client - preserve password_plain if it exists"""
     clients = load_clients()
     for i, c in enumerate(clients):
         if c["id"] == client_id:
-            client_dict = client.dict()
+            # Preserve existing password_plain if updating other fields
+            existing_password_plain = c.get("password_plain")
+            existing_password_hash = c.get("password")
+            
+            client_dict = client.dict(exclude={'password', 'password_plain'})  # Exclude password fields from input
             client_dict["id"] = client_id
+            
+            # Preserve existing password fields if not being updated
+            if existing_password_hash:
+                client_dict["password"] = existing_password_hash
+            if existing_password_plain:
+                client_dict["password_plain"] = existing_password_plain
+            
             clients[i] = client_dict
             save_clients(clients)
-            return client_dict
+            
+            # Return without hashed password for security
+            response_dict = {k: v for k, v in client_dict.items() if k != 'password'}
+            return response_dict
     raise HTTPException(status_code=404, detail="Client not found")
 
 @app.delete("/api/clients/{client_id}")
-async def delete_client(client_id: str):
-    """Delete a client - checks both files for associated dispensers"""
-    installed_machines = load_dispensers()
+async def delete_client_endpoint(client_id: str):
+    """Delete a client - checks machine instances for associated machines"""
+    instances = load_machine_instances()
     client_machines_data = load_client_machines()
     clients = load_clients()
     
-    # Check if any dispensers are using this client in both files
-    for dispenser in installed_machines:
-        if dispenser.get("client_id") == client_id:
-            raise HTTPException(status_code=400, detail="Cannot delete client with associated dispensers")
+    # Check if any instances are using this client
+    all_instances = instances + client_machines_data.get("client_machines", [])
+    for instance in all_instances:
+        if instance.get("client_id") == client_id:
+            raise HTTPException(status_code=400, detail="Cannot delete client with associated machine instances")
     
     for dispenser in client_machines_data.get("client_machines", []):
         if dispenser.get("client_id") == client_id:
             raise HTTPException(status_code=400, detail="Cannot delete client with associated dispensers")
     
-    clients = [c for c in clients if c["id"] != client_id]
-    save_clients(clients)
+    # Delete from Supabase
+    delete_client(client_id)
     return {"message": "Client deleted"}
 
-def calculate_time_range_usage(time_ranges, ml_per_hour=None):
-    """Calculate daily usage from time ranges"""
-    total_usage_ml = 0
-    total_run_time_hours = 0
+def calculate_time_range_usage(time_ranges, ml_per_hour=None, days_of_week=None):
+    """Calculate daily usage from time ranges, accounting for days_of_week
+    
+    Args:
+        time_ranges: List of time range dicts with start_time, end_time, spray_seconds, pause_seconds
+        ml_per_hour: Optional ml per hour rate (if None, uses 0.1 ml per second default)
+        days_of_week: Optional list of day numbers (0=Monday, 6=Sunday). If None, runs every day.
+    
+    Returns:
+        Average daily usage in ml (weekly usage / 7)
+    """
+    import json
+    
+    # Parse days_of_week if it's a string (JSON) or already a list
+    active_days = None
+    if days_of_week is not None:
+        if isinstance(days_of_week, str):
+            try:
+                # Try parsing as JSON string (e.g., '["0","1","2"]')
+                parsed = json.loads(days_of_week)
+                # Convert string numbers to integers
+                active_days = [int(d) if isinstance(d, str) else d for d in parsed]
+            except (json.JSONDecodeError, ValueError):
+                # If parsing fails, try to extract numbers from string
+                try:
+                    # Handle cases like "[0,1,2]" or "0,1,2"
+                    cleaned = days_of_week.strip('[]"')
+                    active_days = [int(d.strip()) for d in cleaned.split(',') if d.strip().isdigit()]
+                except:
+                    active_days = None
+        elif isinstance(days_of_week, list):
+            # Already a list, convert string numbers to integers if needed
+            active_days = [int(d) if isinstance(d, str) else d for d in days_of_week]
+    
+    # If no days specified or parsing failed, assume all 7 days
+    if active_days is None or len(active_days) == 0:
+        active_days_count = 7
+    else:
+        active_days_count = len(active_days)
+    
+    # Calculate usage per day (for one active day)
+    total_usage_per_day_ml = 0
+    total_run_time_hours_per_day = 0
     
     for time_range in time_ranges:
-        start_h, start_m = map(int, time_range["start_time"].split(":"))
-        end_h, end_m = map(int, time_range["end_time"].split(":"))
-        
-        start_minutes = start_h * 60 + start_m
-        end_minutes = end_h * 60 + end_m
-        
-        # Handle overnight ranges (e.g., 23:59 to 00:00)
-        if end_minutes < start_minutes:
-            end_minutes += 24 * 60
-        
-        duration_minutes = end_minutes - start_minutes
-        duration_hours = duration_minutes / 60
-        
-        if ml_per_hour:
-            # Method 1: Use ml_per_hour rate
-            # Calculate total spray time in hours for this range
-            cycle_duration = time_range["spray_seconds"] + time_range["pause_seconds"]
+        try:
+            # Parse start and end times
+            start_h, start_m = map(int, str(time_range.get("start_time", "00:00")).split(":"))
+            end_h, end_m = map(int, str(time_range.get("end_time", "23:59")).split(":"))
+            
+            start_minutes = start_h * 60 + start_m
+            end_minutes = end_h * 60 + end_m
+            
+            # Handle overnight ranges (e.g., 23:59 to 00:00)
+            if end_minutes < start_minutes:
+                end_minutes += 24 * 60
+            
+            duration_minutes = end_minutes - start_minutes
             duration_seconds = duration_minutes * 60
+            
+            # Convert spray_seconds and pause_seconds to float (handle string/number)
+            spray_seconds = float(time_range.get("spray_seconds", 0))
+            pause_seconds = float(time_range.get("pause_seconds", 0))
+            
+            # Calculate cycles within this time range
+            cycle_duration = spray_seconds + pause_seconds
+            if cycle_duration == 0:
+                continue  # Skip invalid cycles
+            
             cycles = duration_seconds / cycle_duration
-            spray_time_seconds = cycles * time_range["spray_seconds"]
-            spray_time_hours = spray_time_seconds / 3600
-            total_run_time_hours += spray_time_hours
-        else:
-            # Method 2: Use default 0.1 ml per second
-            ML_PER_SECOND = 0.1
-            duration_seconds = duration_minutes * 60
-            cycle_duration = time_range["spray_seconds"] + time_range["pause_seconds"]
-            cycles = duration_seconds / cycle_duration
-            usage_per_cycle = time_range["spray_seconds"] * ML_PER_SECOND
-            total_usage_ml += usage_per_cycle * cycles
+            
+            if ml_per_hour:
+                # Method 1: Use ml_per_hour rate
+                # Calculate total spray time in hours for this range
+                spray_time_seconds = cycles * spray_seconds
+                spray_time_hours = spray_time_seconds / 3600
+                total_run_time_hours_per_day += spray_time_hours
+            else:
+                # Method 2: Use default 0.1 ml per second
+                ML_PER_SECOND = 0.1
+                usage_per_cycle = spray_seconds * ML_PER_SECOND
+                total_usage_per_day_ml += usage_per_cycle * cycles
+        except (ValueError, KeyError, TypeError):
+            # Skip invalid time ranges and continue
+            continue
     
+    # Calculate total usage per day
     if ml_per_hour:
-        # Calculate using ml_per_hour
-        total_usage_ml = total_run_time_hours * ml_per_hour
+        total_usage_per_day_ml = total_run_time_hours_per_day * ml_per_hour
     
-    return total_usage_ml
+    # Calculate weekly usage: usage per day * number of active days
+    weekly_usage_ml = total_usage_per_day_ml * active_days_count
+    
+    # Return average daily usage (weekly usage / 7)
+    average_daily_usage_ml = weekly_usage_ml / 7
+    
+    return average_daily_usage_ml
 
 @app.get("/api/dispensers/{dispenser_id}/usage-calculation")
 async def calculate_usage(dispenser_id: str):
-    """Calculate daily usage based on assigned schedule - checks both files"""
-    installed_machines = load_dispensers()
+    """Calculate daily usage based on assigned schedule - works with machine instances (backward compatibility)"""
+    instances = load_machine_instances()
     client_machines_data = load_client_machines()
     schedules = load_schedules()
     
-    # Find dispenser in both files
+    # Find instance in both files
     dispenser = None
-    for d in client_machines_data.get("client_machines", []):
-        if d["id"] == dispenser_id:
-            dispenser = d
+    for inst in client_machines_data.get("client_machines", []):
+        if inst.get("id") == dispenser_id:
+            dispenser = inst
             break
     
     if not dispenser:
-        for d in installed_machines:
-            if d["id"] == dispenser_id:
-                dispenser = d
+        for inst in instances:
+            if inst.get("id") == dispenser_id:
+                dispenser = inst
                 break
     
     if not dispenser:
@@ -1233,20 +1816,61 @@ async def calculate_usage(dispenser_id: str):
     
     # Find schedule
     schedule = None
+    current_schedule_id = dispenser.get("current_schedule_id")
+    
     for s in schedules:
-        if s.get("id") == dispenser.get("current_schedule_id"):
+        if s.get("id") == current_schedule_id:
             schedule = s
             break
     
     if not schedule:
         return {"daily_usage_ml": 0, "days_until_empty": None}
     
+    # If time_ranges is empty, try to reload schedules with force_refresh
+    if not schedule.get("time_ranges") or len(schedule.get("time_ranges", [])) == 0:
+        try:
+            # Clear cache and reload schedules
+            clear_data_cache()
+            schedules = load_schedules(force_refresh=True)
+            
+            # Find the schedule again after reload
+            for s in schedules:
+                if s.get("id") == current_schedule_id:
+                    schedule = s
+                    break
+            
+            # If still empty, try direct query
+            if not schedule.get("time_ranges") or len(schedule.get("time_ranges", [])) == 0:
+                from supabase_service import supabase as supabase_client
+                direct_query = supabase_client.table("schedule_time_ranges").select("*").eq("schedule_id", schedule.get("id")).execute()
+                if direct_query.data:
+                    schedule["time_ranges"] = direct_query.data
+                else:
+                    # Try with different schedule_id formats
+                    schedule_id_variants = [
+                        schedule.get("id"),
+                        schedule.get("id").replace("_", "-"),
+                        schedule.get("id").replace("-", "_"),
+                    ]
+                    for variant in schedule_id_variants:
+                        if variant != schedule.get("id"):
+                            test_query = supabase_client.table("schedule_time_ranges").select("*").eq("schedule_id", variant).execute()
+                            if test_query.data:
+                                schedule["time_ranges"] = test_query.data
+                                break
+        except Exception:
+            pass
+    
     # Check for ml_per_hour: machine-specific takes priority over schedule-specific
     ml_per_hour = dispenser.get("ml_per_hour") or schedule.get("ml_per_hour")
     
-    # Check if it's a time-based schedule
-    if schedule.get("time_ranges"):
-        daily_usage_ml = calculate_time_range_usage(schedule["time_ranges"], ml_per_hour)
+    # Get days_of_week from schedule
+    days_of_week = schedule.get("days_of_week")
+    
+    # Check if it's a time-based schedule (check for both None and empty list)
+    time_ranges = schedule.get("time_ranges")
+    if time_ranges and len(time_ranges) > 0:
+        daily_usage_ml = calculate_time_range_usage(time_ranges, ml_per_hour, days_of_week)
         cycle_usage_ml = daily_usage_ml / 24  # Approximate per hour
     else:
         # Old format: interval-based schedule
@@ -1267,7 +1891,9 @@ async def calculate_usage(dispenser_id: str):
                 cycle_usage_ml += interval["spray_seconds"] * ML_PER_SECOND
         
         # Calculate daily usage
-        daily_cycles = schedule.get("daily_cycles", 1)
+        daily_cycles = schedule.get("daily_cycles")
+        if daily_cycles is None:
+            daily_cycles = 1  # Default to 1 if None
         daily_usage_ml = cycle_usage_ml * daily_cycles
     
     # Calculate actual usage since last refill if last_refill_date is provided
@@ -1399,7 +2025,7 @@ async def update_technician_assignment(assignment_id: str, assignment_update: di
     raise HTTPException(status_code=404, detail="Assignment not found")
 
 @app.delete("/api/technician-assignments/{assignment_id}")
-async def delete_technician_assignment(assignment_id: str):
+async def delete_technician_assignment_endpoint(assignment_id: str):
     """Delete a technician assignment"""
     assignments = load_technician_assignments()
     
@@ -1408,8 +2034,8 @@ async def delete_technician_assignment(assignment_id: str):
     if not assignment_exists:
         raise HTTPException(status_code=404, detail="Assignment not found")
     
-    assignments = [a for a in assignments if a["id"] != assignment_id]
-    save_technician_assignments(assignments)
+    # Delete from Supabase
+    delete_technician_assignment(assignment_id)
     return {"message": "Assignment deleted successfully"}
 
 @app.post("/api/technician-assignments/{assignment_id}/complete")
@@ -1510,15 +2136,16 @@ async def get_technician_stats(technician_username: str, start_date: str = None,
 async def health_check():
     """Health check endpoint to verify API is running"""
     try:
-        # Test Google Sheets connection
-        from gsheets_service import get_spreadsheet
-        spreadsheet = get_spreadsheet()
+        # Test Supabase connection
+        from supabase_service import supabase
+        # Simple query to test connection
+        result = supabase.table("users").select("username").limit(1).execute()
         
         return {
             "status": "healthy",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "storage": "Google Sheets",
-            "spreadsheet_id": "1TkSgekL4LxhRl8U0q972Z21tiiP5PNyYIrQBB8C5144",
+            "storage": "Supabase",
+            "project_url": "https://ghbadyidxmckiuvyawzx.supabase.co",
             "version": "1.0.0"
         }
     except Exception as e:
