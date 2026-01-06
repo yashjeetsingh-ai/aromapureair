@@ -157,6 +157,11 @@ export const login = async (username, password) => {
   return response.data;
 };
 
+export const clientLogin = async (clientId, password) => {
+  const response = await api.post('/client-login', { username: clientId, password });
+  return response.data;
+};
+
 export const getSchedules = async () => {
   const response = await api.get('/schedules');
   return response.data;

@@ -149,6 +149,8 @@ function TechnicianDashboard() {
   // Installation and Add Machine dialogs
   const [installationDialogOpen, setInstallationDialogOpen] = useState(false);
   const [addMachineDialogOpen, setAddMachineDialogOpen] = useState(false);
+  const [addMachineLoading, setAddMachineLoading] = useState(false);
+  const [createInstallationLoading, setCreateInstallationLoading] = useState(false);
   const [installationForm, setInstallationForm] = useState({
     location: '',
     sku: '',
@@ -159,6 +161,7 @@ function TechnicianDashboard() {
     refill_amount_ml: 0,
     last_refill_date: null,
     installation_date: null,
+    fragrance_code: '',
   });
   const [addMachineForm, setAddMachineForm] = useState({
     sku: '',
@@ -167,6 +170,7 @@ function TechnicianDashboard() {
     status: 'assigned',
   });
   const [customScheduleDialogOpen, setCustomScheduleDialogOpen] = useState(false);
+  const [customScheduleLoading, setCustomScheduleLoading] = useState(false);
   const [customScheduleForm, setCustomScheduleForm] = useState({
     name: '',
     type: 'custom',
@@ -431,6 +435,7 @@ function TechnicianDashboard() {
     }
 
     try {
+      setAddMachineLoading(true);
       // Find the SKU template
       const skuTemplate = getSKUTemplates().find(d => d.sku === addMachineForm.sku);
       
@@ -469,8 +474,7 @@ function TechnicianDashboard() {
         sku: skuTemplate.sku,
       };
 
-      await createDispenser(machineData);
-      await loadData();
+      // Close dialog and reset form immediately for better UX
       setAddMachineDialogOpen(false);
       setAddMachineForm({
         sku: '',
@@ -478,10 +482,29 @@ function TechnicianDashboard() {
         location: '',
         status: 'assigned',
       });
+
+      // Create machine via API
+      const createdMachine = await createDispenser(machineData);
+      
+      // Optimistically update local state immediately
+      setDispensers(prev => [...prev, createdMachine || machineData]);
+      
+      // Refresh only dispensers in background (non-blocking)
+      getDispensers().then(dispensersData => {
+        setDispensers(dispensersData);
+      }).catch(err => {
+        console.error('Error refreshing dispensers:', err);
+        // Revert optimistic update on error
+        setDispensers(prev => prev.filter(d => d.id !== (createdMachine?.id || machineData.id)));
+        alert('Machine was added but failed to refresh. Please refresh the page.');
+      });
+      
       alert('Machine added to client successfully!');
     } catch (err) {
       console.error('Error adding machine:', err);
       alert('Error adding machine: ' + (err.response?.data?.detail || 'Unknown error'));
+    } finally {
+      setAddMachineLoading(false);
     }
   };
 
@@ -493,6 +516,7 @@ function TechnicianDashboard() {
     }
 
     try {
+      setCreateInstallationLoading(true);
       // Find the SKU template
       const skuTemplate = getSKUTemplates().find(d => d.sku === installationForm.sku);
       
@@ -545,24 +569,10 @@ function TechnicianDashboard() {
         ml_per_hour: skuTemplate.ml_per_hour,
         refill_capacity_ml: skuTemplate.refill_capacity_ml,
         sku: skuTemplate.sku,
+        fragrance_code: installationForm.fragrance_code || null,
       };
 
-      if (assignedMachine) {
-        // Update existing assigned machine to installed
-        await updateDispenser(assignedMachine.id, installationData);
-      } else {
-        // Check for duplicate code (should not happen if validation above works, but double-check)
-        const duplicateCode = dispensers.find(d => d.unique_code === installationForm.unique_code);
-        if (duplicateCode) {
-          const existingClient = clients.find(c => c.id === duplicateCode.client_id);
-          alert(`Code "${installationForm.unique_code}" already exists for client "${existingClient?.name || duplicateCode.client_id}". Each machine code must be unique across all clients.`);
-          return;
-        }
-        // Create new installation
-        await createDispenser(installationData);
-      }
-
-      await loadData();
+      // Close dialog and reset form immediately for better UX
       setInstallationDialogOpen(false);
       setInstallationForm({
         location: '',
@@ -574,11 +584,53 @@ function TechnicianDashboard() {
         refill_amount_ml: 0,
         last_refill_date: null,
         installation_date: null,
+        fragrance_code: '',
       });
+
+      let updatedMachine;
+      if (assignedMachine) {
+        // Update existing assigned machine to installed
+        updatedMachine = await updateDispenser(assignedMachine.id, installationData);
+        // Optimistically update local state immediately
+        setDispensers(prev => prev.map(d => 
+          d.id === assignedMachine.id ? (updatedMachine || { ...d, ...installationData }) : d
+        ));
+      } else {
+        // Check for duplicate code (should not happen if validation above works, but double-check)
+        const duplicateCode = dispensers.find(d => d.unique_code === installationForm.unique_code);
+        if (duplicateCode) {
+          const existingClient = clients.find(c => c.id === duplicateCode.client_id);
+          alert(`Code "${installationForm.unique_code}" already exists for client "${existingClient?.name || duplicateCode.client_id}". Each machine code must be unique across all clients.`);
+          return;
+        }
+        // Create new installation
+        updatedMachine = await createDispenser(installationData);
+        // Optimistically update local state immediately
+        setDispensers(prev => [...prev, updatedMachine || installationData]);
+      }
+
+      // Refresh only dispensers in background (non-blocking)
+      getDispensers().then(dispensersData => {
+        setDispensers(dispensersData);
+      }).catch(err => {
+        console.error('Error refreshing dispensers:', err);
+        // Revert optimistic update on error
+        if (assignedMachine) {
+          setDispensers(prev => prev.map(d => 
+            d.id === assignedMachine.id ? assignedMachine : d
+          ));
+        } else {
+          setDispensers(prev => prev.filter(d => d.id !== (updatedMachine?.id || installationData.id)));
+        }
+        alert('Installation was created but failed to refresh. Please refresh the page.');
+      });
+      
       alert('Installation created successfully!');
     } catch (err) {
       console.error('Error creating installation:', err);
       alert('Error creating installation: ' + (err.response?.data?.detail || 'Unknown error'));
+    } finally {
+      setCreateInstallationLoading(false);
     }
   };
 
@@ -644,6 +696,7 @@ function TechnicianDashboard() {
     }
 
     try {
+      setCustomScheduleLoading(true);
       let scheduleData;
       
       if (customScheduleForm.scheduleType === 'time_based') {
@@ -689,17 +742,11 @@ function TechnicianDashboard() {
         scheduleData.days_of_week = customScheduleForm.days_of_week;
       }
 
-      const created = await createSchedule(scheduleData);
+      // Close dialog and reset form immediately for better UX
+      setCustomScheduleDialogOpen(false);
+      const installationFormBackup = { ...installationForm };
 
-      // Refresh schedules and pre-select the newly created one
-      const schedulesData = await getSchedules();
-      setSchedules(schedulesData);
-      setInstallationForm({
-        ...installationForm,
-        schedule_id: created?.id || '',
-      });
-
-      // Reset form
+      // Reset form immediately
       setCustomScheduleForm({
         name: '',
         type: 'custom',
@@ -716,11 +763,43 @@ function TechnicianDashboard() {
         ],
         days_of_week: [0, 1, 2, 3, 4, 5, 6],
       });
-      setCustomScheduleDialogOpen(false);
+
+      // Create schedule via API
+      const created = await createSchedule(scheduleData);
+
+      // Optimistically update local state immediately
+      if (created) {
+        setSchedules(prev => [...prev, created]);
+        setInstallationForm({
+          ...installationFormBackup,
+          schedule_id: created.id || '',
+        });
+      }
+
+      // Refresh schedules in background (non-blocking) to ensure consistency
+      getSchedules().then(schedulesData => {
+        setSchedules(schedulesData);
+        // Update installation form with the correct schedule ID
+        if (created?.id) {
+          setInstallationForm(prev => ({
+            ...prev,
+            schedule_id: created.id,
+          }));
+        }
+      }).catch(err => {
+        console.error('Error refreshing schedules:', err);
+        // Revert optimistic update on error
+        if (created) {
+          setSchedules(prev => prev.filter(s => s.id !== created.id));
+        }
+      });
+      
       alert('Custom schedule created and selected.');
     } catch (err) {
       console.error('Error creating schedule:', err);
       alert(err.response?.data?.detail || 'Error creating custom schedule');
+    } finally {
+      setCustomScheduleLoading(false);
     }
   };
 
@@ -2692,9 +2771,15 @@ function TechnicianDashboard() {
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setAddMachineDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleAddMachine} variant="contained" disabled={!addMachineForm.sku || !addMachineForm.unique_code}>
-            Add Machine
+          <Button onClick={() => setAddMachineDialogOpen(false)} disabled={addMachineLoading}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleAddMachine}
+            variant="contained"
+            disabled={!addMachineForm.sku || !addMachineForm.unique_code || addMachineLoading}
+          >
+            {addMachineLoading ? <CircularProgress size={20} color="inherit" /> : 'Add Machine'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2896,6 +2981,17 @@ function TechnicianDashboard() {
             </FormHelperText>
           </FormControl>
 
+          <TextField
+            fullWidth
+            label="Fragrance Code"
+            placeholder="e.g., FRG001, LAVENDER, etc."
+            value={installationForm.fragrance_code || ''}
+            onChange={(e) => setInstallationForm({ ...installationForm, fragrance_code: e.target.value })}
+            margin="normal"
+            required
+            helperText="Enter the fragrance code used in this machine"
+          />
+
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
             <Button
               size="small"
@@ -2954,17 +3050,20 @@ function TechnicianDashboard() {
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setInstallationDialogOpen(false)}>Cancel</Button>
+          <Button onClick={() => setInstallationDialogOpen(false)} disabled={createInstallationLoading}>
+            Cancel
+          </Button>
           <Button 
             onClick={handleCreateInstallation} 
             variant="contained" 
             disabled={
               !installationForm.sku || 
               !installationForm.location || 
-              !installationForm.unique_code
+              !installationForm.unique_code ||
+              createInstallationLoading
             }
           >
-            Create Installation
+            {createInstallationLoading ? <CircularProgress size={20} color="inherit" /> : 'Create Installation'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -3197,8 +3296,16 @@ function TechnicianDashboard() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCustomScheduleDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleCreateCustomSchedule}>Create & Select</Button>
+          <Button onClick={() => setCustomScheduleDialogOpen(false)} disabled={customScheduleLoading}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleCreateCustomSchedule}
+            disabled={customScheduleLoading}
+          >
+            {customScheduleLoading ? <CircularProgress size={20} color="inherit" /> : 'Create & Select'}
+          </Button>
         </DialogActions>
       </Dialog>
       </Box>

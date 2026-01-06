@@ -497,17 +497,36 @@ function TechnicianView({
                   <Typography variant="h6" sx={{ mb: 2 }}>
                     Refill History ({technicianRefillLogs.length})
                   </Typography>
-                  <TableContainer>
-                    <Table>
-                      <TableHead>
-                        <TableRow sx={{ bgcolor: 'grey.50' }}>
-                          <TableCell sx={{ fontWeight: 600 }}>Date & Time</TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Machine Code</TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Client</TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Amount (ml)</TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Notes</TableCell>
-                        </TableRow>
-                      </TableHead>
+                  <Box sx={{ 
+                    overflowX: 'auto',
+                    borderRadius: 2,
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    '&::-webkit-scrollbar': {
+                      height: 8,
+                    },
+                    '&::-webkit-scrollbar-track': {
+                      background: '#f1f1f1',
+                    },
+                    '&::-webkit-scrollbar-thumb': {
+                      background: '#888',
+                      borderRadius: 4,
+                      '&:hover': {
+                        background: '#555',
+                      },
+                    },
+                  }}>
+                    <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: 'none', overflow: 'visible', minWidth: 800 }}>
+                      <Table sx={{ minWidth: 800 }}>
+                        <TableHead>
+                          <TableRow sx={{ bgcolor: 'grey.50' }}>
+                            <TableCell sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Date & Time</TableCell>
+                            <TableCell sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Machine Code</TableCell>
+                            <TableCell sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Client</TableCell>
+                            <TableCell sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Amount (ml)</TableCell>
+                            <TableCell sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Notes</TableCell>
+                          </TableRow>
+                        </TableHead>
                       <TableBody>
                         {technicianRefillLogs
                           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -515,24 +534,24 @@ function TechnicianView({
                             const machine = getDispenserById(log.dispenser_id);
                             return (
                               <TableRow key={log.id} hover>
-                                <TableCell>
+                                <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                   <Typography variant="body2">{formatDateTimeIST(log.timestamp)}</Typography>
                                 </TableCell>
-                                <TableCell>
+                                <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                   <Typography variant="body2" fontWeight={500}>
                                     {machine?.unique_code || '-'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell>
+                                <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                   <Typography variant="body2">{machine ? getClientName(machine.client_id) : '-'}</Typography>
                                 </TableCell>
-                                <TableCell>
+                                <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                   <Typography variant="body2" fontWeight={500}>
                                     {log.refill_amount_ml} ml
                                   </Typography>
                                 </TableCell>
                                 <TableCell>
-                                  <Typography variant="body2" color="text.secondary">
+                                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                     {log.notes || '-'}
                                   </Typography>
                                 </TableCell>
@@ -542,6 +561,7 @@ function TechnicianView({
                       </TableBody>
                     </Table>
                   </TableContainer>
+                  </Box>
                 </Box>
               )}
             </Box>

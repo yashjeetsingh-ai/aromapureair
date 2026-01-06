@@ -60,25 +60,46 @@ function HomePage() {
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
       <AppBar position="static" elevation={1} sx={{ bgcolor: 'white', color: 'text.primary' }}>
-        <Toolbar>
+        <Toolbar sx={{ px: { xs: 2, sm: 3 }, py: 1.5 }}>
           <Box sx={{ flexGrow: 1 }}>
             <Logo size="medium" color="primary" />
           </Box>
+          <Box sx={{ display: 'flex', gap: { xs: 1, sm: 2 }, alignItems: 'center' }}>
+            <Button
+              color="primary"
+              variant="text"
+              onClick={() => navigate('/client-login')}
+              sx={{ 
+                display: { xs: 'none', sm: 'inline-flex' },
+                minWidth: { xs: 'auto', sm: 100 },
+                textTransform: 'none',
+              }}
+            >
+              Client Portal
+            </Button>
           <Button
             color="primary"
             variant="outlined"
             onClick={() => navigate('/login')}
-            sx={{ mr: 2 }}
+              sx={{ 
+                display: { xs: 'none', sm: 'inline-flex' },
+                minWidth: { xs: 'auto', sm: 100 },
+              }}
           >
-            Sign In
+              Staff Login
           </Button>
           <Button
             color="primary"
             variant="contained"
             onClick={() => navigate('/login')}
+              sx={{ 
+                minWidth: { xs: 100, sm: 120 },
+                fontSize: { xs: '0.875rem', sm: '1rem' },
+              }}
           >
             Get Started
           </Button>
+          </Box>
         </Toolbar>
       </AppBar>
 
@@ -91,22 +112,31 @@ function HomePage() {
           py: { xs: 10, md: 16 },
         }}
       >
-        <Container maxWidth="lg">
+        <Container maxWidth="lg" sx={{ px: { xs: 2, sm: 3, md: 4 } }}>
           <Typography
             variant="h2"
             component="h1"
             sx={{
-              fontWeight: 400,
-              mb: 4,
+              fontWeight: 600,
+              mb: { xs: 3, md: 4 },
               textAlign: 'center',
               color: 'text.primary',
-              fontSize: { xs: '2.5rem', sm: '3rem', md: '3.75rem' },
+              fontSize: { xs: '2rem', sm: '2.75rem', md: '3.5rem', lg: '3.75rem' },
               lineHeight: 1.2,
+              px: { xs: 1, sm: 0 },
             }}
           >
             Aromahpure Air
-            <br />
-            <Box component="span" sx={{ fontWeight: 400, color: 'text.secondary', fontSize: '0.6em' }}>
+            <Box 
+              component="span" 
+              sx={{ 
+                display: 'block',
+                fontWeight: 400, 
+                color: 'text.secondary', 
+                fontSize: { xs: '0.5em', sm: '0.55em', md: '0.6em' },
+                mt: { xs: 1, sm: 1.5 },
+              }}
+            >
               Perfume Dispenser Management System
             </Box>
           </Typography>
@@ -114,28 +144,36 @@ function HomePage() {
             variant="h5"
             component="p"
             sx={{
-              mb: 6,
+              mb: { xs: 4, md: 6 },
               textAlign: 'center',
               color: 'text.secondary',
               maxWidth: '800px',
               mx: 'auto',
               fontWeight: 400,
-              fontSize: { xs: '1.1rem', md: '1.5rem' },
+              fontSize: { xs: '1rem', sm: '1.25rem', md: '1.5rem' },
               lineHeight: 1.6,
+              px: { xs: 1, sm: 0 },
             }}
           >
             Streamline your aroma dispensing operations with intelligent scheduling,
             real-time monitoring, and comprehensive client management.
           </Typography>
-          <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2, flexWrap: 'wrap' }}>
+          <Box sx={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            gap: { xs: 1.5, sm: 2 }, 
+            flexWrap: 'wrap',
+            px: { xs: 1, sm: 0 },
+          }}>
             <Button
               variant="contained"
               size="large"
               onClick={() => navigate('/login')}
               sx={{
-                px: 5,
-                py: 2,
-                fontSize: '1.1rem',
+                px: { xs: 4, sm: 5 },
+                py: { xs: 1.5, sm: 2 },
+                fontSize: { xs: '1rem', sm: '1.1rem' },
+                minWidth: { xs: 140, sm: 160 },
               }}
             >
               Get Started
@@ -145,9 +183,10 @@ function HomePage() {
               size="large"
               onClick={() => navigate('/login')}
               sx={{
-                px: 5,
-                py: 2,
-                fontSize: '1.1rem',
+                px: { xs: 4, sm: 5 },
+                py: { xs: 1.5, sm: 2 },
+                fontSize: { xs: '1rem', sm: '1.1rem' },
+                minWidth: { xs: 140, sm: 160 },
               }}
             >
               Learn More
@@ -157,15 +196,16 @@ function HomePage() {
       </Box>
 
       {/* Features Section */}
-      <Container maxWidth="lg" sx={{ py: 8 }}>
+      <Container maxWidth="lg" sx={{ py: { xs: 6, md: 8 }, px: { xs: 2, sm: 3, md: 4 } }}>
         <Typography
           variant="h4"
           component="h2"
           sx={{
             textAlign: 'center',
-            mb: 1,
-            fontWeight: 400,
+            mb: { xs: 1, md: 1.5 },
+            fontWeight: 600,
             color: 'text.primary',
+            fontSize: { xs: '1.75rem', sm: '2rem', md: '2.125rem' },
           }}
         >
           Key Features
@@ -175,24 +215,40 @@ function HomePage() {
           component="p"
           sx={{
             textAlign: 'center',
-            mb: 6,
+            mb: { xs: 4, md: 6 },
             color: 'text.secondary',
             maxWidth: '600px',
             mx: 'auto',
+            px: { xs: 2, sm: 0 },
+            fontSize: { xs: '0.875rem', sm: '1rem' },
           }}
         >
           Enterprise-grade solutions for managing your perfume dispensing operations
         </Typography>
-        <Grid container spacing={4}>
+        <Grid container spacing={{ xs: 3, sm: 4, md: 4 }}>
           {features.map((feature, index) => (
-            <Grid item xs={12} md={6} lg={4} key={index}>
-              <Card elevation={0} sx={{ height: '100%', border: '1px solid', borderColor: 'divider' }}>
-                <CardContent sx={{ p: 3 }}>
+            <Grid item xs={12} sm={6} lg={4} key={index}>
+              <Card 
+                elevation={0} 
+                sx={{ 
+                  height: '100%', 
+                  border: '1px solid', 
+                  borderColor: 'divider',
+                  borderRadius: 3,
+                  transition: 'all 0.3s ease',
+                  '&:hover': {
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
+                    borderColor: 'primary.light',
+                    transform: 'translateY(-4px)',
+                  },
+                }}
+              >
+                <CardContent sx={{ p: { xs: 2.5, sm: 3 } }}>
                   <Box sx={{ mb: 2 }}>{feature.icon}</Box>
-                  <Typography variant="h6" component="h3" sx={{ mb: 1.5, fontWeight: 500 }}>
+                  <Typography variant="h6" component="h3" sx={{ mb: 1.5, fontWeight: 600, fontSize: { xs: '1.1rem', sm: '1.25rem' } }}>
                     {feature.title}
                   </Typography>
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.875rem', sm: '0.9375rem' }, lineHeight: 1.6 }}>
                     {feature.description}
                   </Typography>
                 </CardContent>
@@ -209,15 +265,15 @@ function HomePage() {
           borderTop: '1px solid',
           borderBottom: '1px solid',
           borderColor: 'divider',
-          py: 6,
+          py: { xs: 5, md: 6 },
           textAlign: 'center',
         }}
       >
-        <Container maxWidth="md">
-          <Typography variant="h5" component="h2" sx={{ mb: 2, fontWeight: 400 }}>
+        <Container maxWidth="md" sx={{ px: { xs: 2, sm: 3, md: 4 } }}>
+          <Typography variant="h5" component="h2" sx={{ mb: 2, fontWeight: 600, fontSize: { xs: '1.5rem', sm: '1.75rem', md: '2rem' } }}>
             Ready to Get Started?
           </Typography>
-          <Typography variant="body1" sx={{ mb: 4, color: 'text.secondary' }}>
+          <Typography variant="body1" sx={{ mb: { xs: 3, md: 4 }, color: 'text.secondary', fontSize: { xs: '0.875rem', sm: '1rem' }, px: { xs: 2, sm: 0 } }}>
             Access your dashboard and start managing your perfume dispensers today
           </Typography>
           <Button
@@ -225,8 +281,10 @@ function HomePage() {
             size="large"
             onClick={() => navigate('/login')}
             sx={{
-              px: 6,
-              py: 1.5,
+              px: { xs: 5, sm: 6 },
+              py: { xs: 1.25, sm: 1.5 },
+              fontSize: { xs: '1rem', sm: '1.1rem' },
+              minWidth: { xs: 160, sm: 180 },
             }}
           >
             Sign In Now

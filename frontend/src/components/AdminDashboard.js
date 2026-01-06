@@ -37,6 +37,10 @@ import {
   Toolbar,
   useTheme,
   useMediaQuery,
+  ToggleButtonGroup,
+  ToggleButton,
+  Divider,
+  Alert,
 } from '@mui/material';
 import { 
   Refresh, 
@@ -61,6 +65,11 @@ import {
   EventNote,
   Close,
   Menu,
+  Code,
+  AdminPanelSettings,
+  ViewComfy,
+  TableRows,
+  ContentCopy,
 } from '@mui/icons-material';
 import { useLocation } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
@@ -111,6 +120,21 @@ function AdminDashboard() {
   const [usageData, setUsageData] = useState({});
   const [loading, setLoading] = useState(true);
   
+  // Data loading state tracking
+  const [dataLoaded, setDataLoaded] = useState({
+    dispensers: false,
+    schedules: false,
+    refillLogs: false,
+    clients: false,
+    users: false,
+    assignments: false,
+    usage: false,
+  });
+  
+  // Cache timestamp to prevent unnecessary refetches
+  const [lastFetchTime, setLastFetchTime] = useState({});
+  const CACHE_DURATION = 30000; // 30 seconds cache
+  
   // Technician View Mode
   const [technicianViewMode, setTechnicianViewMode] = useState(false);
   const [selectedTechnicianForView, setSelectedTechnicianForView] = useState('');
@@ -124,9 +148,14 @@ function AdminDashboard() {
     sku: '',
     status: '', // 'all', 'good', 'medium', 'low', 'urgent', 'overdue'
   });
+  
+  // View mode for Installed Machines: 'table' (horizontal) or 'card' (vertical)
+  const [installedViewMode, setInstalledViewMode] = useState('table');
 
   // Dialog states
   const [clientDialogOpen, setClientDialogOpen] = useState(false);
+  const [clientCredentialsDialogOpen, setClientCredentialsDialogOpen] = useState(false);
+  const [newClientCredentials, setNewClientCredentials] = useState(null);
   const [machineDialogOpen, setMachineDialogOpen] = useState(false);
   const [userDialogOpen, setUserDialogOpen] = useState(false);
   const [installationDialogOpen, setInstallationDialogOpen] = useState(false);
@@ -203,6 +232,7 @@ function AdminDashboard() {
     last_refill_date: null,
     installation_date: null,
     calculated_current_level: 0,
+    fragrance_code: '',
   });
 
   const [addMachineToClientForm, setAddMachineToClientForm] = useState({
@@ -215,7 +245,8 @@ function AdminDashboard() {
   });
 
   useEffect(() => {
-    loadData();
+    // Load essential data on mount (dispensers, clients, schedules)
+    loadEssentialData();
   }, []);
 
   useEffect(() => {
@@ -227,6 +258,13 @@ function AdminDashboard() {
       setActiveTab(null); // Dashboard view
     }
   }, [location]);
+
+  // Load tab-specific data when tab changes
+  useEffect(() => {
+    if (activeTab !== null) {
+      loadTabData(activeTab);
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     // Listen for tab changes from sidebar
@@ -241,35 +279,183 @@ function AdminDashboard() {
     return () => window.removeEventListener('tabChange', handleTabChange);
   }, []);
 
-  const loadData = async () => {
+  // Load essential data (always needed)
+  const loadEssentialData = async (force = false) => {
     try {
-      setLoading(true);
-      const [dispensersData, schedulesData, logsData, clientsData, usersData, assignmentsData] = await Promise.all([
-        getDispensers(),
-        getSchedules(),
-        getRefillLogs(),
-        getClients(),
-        getUsers(),
-        getTechnicianAssignments(),
-      ]);
+      const now = Date.now();
+      const shouldFetch = (key) => force || !dataLoaded[key] || (now - (lastFetchTime[key] || 0)) > CACHE_DURATION;
+      
+      const promises = [];
+      const keys = [];
+      
+      if (shouldFetch('dispensers')) {
+        promises.push(getDispensers());
+        keys.push('dispensers');
+      } else {
+        promises.push(Promise.resolve(dispensers));
+      }
+      
+      if (shouldFetch('schedules')) {
+        promises.push(getSchedules());
+        keys.push('schedules');
+      } else {
+        promises.push(Promise.resolve(schedules));
+      }
+      
+      if (shouldFetch('clients')) {
+        promises.push(getClients());
+        keys.push('clients');
+      } else {
+        promises.push(Promise.resolve(clients));
+      }
+      
+      const [dispensersData, schedulesData, clientsData] = await Promise.all(promises);
+      
+      if (keys.includes('dispensers')) {
       setDispensers(dispensersData);
+        setDataLoaded(prev => ({ ...prev, dispensers: true }));
+        setLastFetchTime(prev => ({ ...prev, dispensers: now }));
+      }
+      
+      if (keys.includes('schedules')) {
       setSchedules(schedulesData);
-      setRefillLogs(logsData);
-      setClients(clientsData);
-      setUsers(usersData);
-      setAssignedTasks(assignmentsData);
+        setDataLoaded(prev => ({ ...prev, schedules: true }));
+        setLastFetchTime(prev => ({ ...prev, schedules: now }));
+      }
+      
+      if (keys.includes('clients')) {
+        setClients(clientsData);
+        setDataLoaded(prev => ({ ...prev, clients: true }));
+        setLastFetchTime(prev => ({ ...prev, clients: now }));
+      }
+      
+      // Only calculate usage for installed machines (not all dispensers)
+      // Run this in the background so initial admin load doesn't wait for all usage calls
+      if (keys.includes('dispensers') || force) {
+        loadUsageData(dispensersData);
+      }
+    } catch (err) {
+      console.error('Error loading essential data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      // Load usage data for each dispenser
-      const usagePromises = dispensersData.map(async (d) => {
-        if (d.current_schedule_id) {
+  // Load usage data only for installed machines with schedules
+  const loadUsageData = async (dispensersData = dispensers) => {
+    try {
+      // Only calculate usage for installed machines with schedules
+      const installedWithSchedules = dispensersData.filter(
+        d => d.client_id && d.status === 'installed' && d.current_schedule_id
+      );
+      
+      if (installedWithSchedules.length === 0) {
+        setUsageData({});
+        setDataLoaded(prev => ({ ...prev, usage: true }));
+        return;
+      }
+      
+      // Batch calculate usage (limit concurrent requests)
+      const BATCH_SIZE = 10;
+      const usageMap = { ...usageData };
+      
+      for (let i = 0; i < installedWithSchedules.length; i += BATCH_SIZE) {
+        const batch = installedWithSchedules.slice(i, i + BATCH_SIZE);
+        const usagePromises = batch.map(async (d) => {
+          try {
           const usage = await calculateUsage(d.id);
           return { [d.id]: usage };
-        }
+          } catch (err) {
+            console.error(`Error calculating usage for ${d.id}:`, err);
         return { [d.id]: null };
-      });
-      const usageResults = await Promise.all(usagePromises);
-      const usageMap = Object.assign({}, ...usageResults);
+          }
+        });
+        const batchResults = await Promise.all(usagePromises);
+        Object.assign(usageMap, ...batchResults);
+      }
+      
       setUsageData(usageMap);
+      setDataLoaded(prev => ({ ...prev, usage: true }));
+      setLastFetchTime(prev => ({ ...prev, usage: Date.now() }));
+    } catch (err) {
+      console.error('Error loading usage data:', err);
+    }
+  };
+
+  // Load tab-specific data only when needed
+  const loadTabData = async (tab) => {
+    const now = Date.now();
+    const shouldFetch = (key) => !dataLoaded[key] || (now - (lastFetchTime[key] || 0)) > CACHE_DURATION;
+    
+    try {
+      if (tab === 3 && shouldFetch('refillLogs')) { // Refill Logs tab
+        const logsData = await getRefillLogs();
+        setRefillLogs(logsData);
+        setDataLoaded(prev => ({ ...prev, refillLogs: true }));
+        setLastFetchTime(prev => ({ ...prev, refillLogs: now }));
+      }
+      
+      if (tab === 2 && shouldFetch('users')) { // Users tab
+        const usersData = await getUsers();
+        setUsers(usersData);
+        setDataLoaded(prev => ({ ...prev, users: true }));
+        setLastFetchTime(prev => ({ ...prev, users: now }));
+      }
+      
+      if (shouldFetch('assignments')) { // Assignments (used in multiple places)
+        const assignmentsData = await getTechnicianAssignments();
+        setAssignedTasks(assignmentsData);
+        setDataLoaded(prev => ({ ...prev, assignments: true }));
+        setLastFetchTime(prev => ({ ...prev, assignments: Date.now() }));
+      }
+    } catch (err) {
+      console.error('Error loading tab data:', err);
+    }
+  };
+
+  // Optimized reload functions - only reload what changed
+  const reloadDispensers = async () => {
+    const dispensersData = await getDispensers();
+    setDispensers(dispensersData);
+    setDataLoaded(prev => ({ ...prev, dispensers: true }));
+    setLastFetchTime(prev => ({ ...prev, dispensers: Date.now() }));
+    await loadUsageData(dispensersData);
+  };
+
+  const reloadClients = async () => {
+    const clientsData = await getClients();
+    setClients(clientsData);
+    setDataLoaded(prev => ({ ...prev, clients: true }));
+    setLastFetchTime(prev => ({ ...prev, clients: Date.now() }));
+  };
+
+  const reloadUsers = async () => {
+    const usersData = await getUsers();
+    setUsers(usersData);
+    setDataLoaded(prev => ({ ...prev, users: true }));
+    setLastFetchTime(prev => ({ ...prev, users: Date.now() }));
+  };
+
+  const reloadRefillLogs = async () => {
+    const logsData = await getRefillLogs();
+    setRefillLogs(logsData);
+    setDataLoaded(prev => ({ ...prev, refillLogs: true }));
+    setLastFetchTime(prev => ({ ...prev, refillLogs: Date.now() }));
+  };
+
+  const reloadAssignments = async () => {
+    const assignmentsData = await getTechnicianAssignments();
+    setAssignedTasks(assignmentsData);
+    setDataLoaded(prev => ({ ...prev, assignments: true }));
+    setLastFetchTime(prev => ({ ...prev, assignments: Date.now() }));
+  };
+
+  // Full data reload (only when explicitly needed)
+  const loadData = async (force = false) => {
+    try {
+      setLoading(true);
+      await loadEssentialData(force);
+      await loadTabData(activeTab);
     } catch (err) {
       console.error('Error loading data:', err);
     } finally {
@@ -312,7 +498,8 @@ function AdminDashboard() {
   const handleScheduleChange = async (dispenserId, scheduleId) => {
     try {
       await assignSchedule(dispenserId, scheduleId);
-      loadData();
+      // Only reload dispensers and usage for this specific machine
+      await reloadDispensers();
     } catch (err) {
       console.error('Error assigning schedule:', err);
       alert('Error assigning schedule: ' + (err.response?.data?.detail || 'Unknown error'));
@@ -337,7 +524,7 @@ function AdminDashboard() {
         status: 'pending',
         notes: '',
       });
-      loadData();
+      await reloadAssignments();
       alert('Task updated successfully!');
     } catch (err) {
       console.error('Error updating task:', err);
@@ -351,7 +538,7 @@ function AdminDashboard() {
       await deleteTechnicianAssignment(taskToDelete.id);
       setTaskToDelete(null);
       setDeleteTaskDialogOpen(false);
-      loadData();
+      await reloadAssignments();
       alert('Task deleted successfully!');
     } catch (err) {
       console.error('Error deleting task:', err);
@@ -391,13 +578,24 @@ function AdminDashboard() {
     try {
       if (editingClient) {
         await updateClient(editingClient.id, clientForm);
+        handleCloseClientDialog();
+        await reloadClients();
       } else {
-        await createClient(clientForm);
-      }
+        // Create new client - will return credentials
+        const newClient = await createClient(clientForm);
       handleCloseClientDialog();
-      loadData();
-      
-      // Client saved successfully
+        await reloadClients();
+        
+        // Show credentials dialog
+        if (newClient.generated_password) {
+          setNewClientCredentials({
+            clientId: newClient.id,
+            password: newClient.generated_password,
+            clientName: newClient.name
+          });
+          setClientCredentialsDialogOpen(true);
+        }
+      }
     } catch (err) {
       alert('Error saving client: ' + (err.response?.data?.detail || 'Unknown error'));
     }
@@ -407,7 +605,7 @@ function AdminDashboard() {
     if (window.confirm('Are you sure you want to delete this client?')) {
       try {
         await deleteClient(clientId);
-        loadData();
+        await reloadClients();
       } catch (err) {
         alert(err.response?.data?.detail || 'Error deleting client');
       }
@@ -444,7 +642,7 @@ function AdminDashboard() {
     if (window.confirm(`Are you sure you want to delete machine "${machineName || machineId}"?\n\nThis action cannot be undone.`)) {
       try {
         await deleteDispenser(machineId);
-        loadData();
+        await reloadDispensers();
       } catch (err) {
         alert('Error deleting machine: ' + (err.response?.data?.detail || 'Unknown error'));
       }
@@ -562,7 +760,7 @@ function AdminDashboard() {
         await createDispenser(machineData);
       }
       handleCloseMachineDialog();
-      loadData();
+      await reloadDispensers();
     } catch (err) {
       alert('Error saving machine: ' + (err.response?.data?.detail || 'Unknown error'));
     }
@@ -610,7 +808,7 @@ function AdminDashboard() {
         await createUser(userForm);
       }
       handleCloseUserDialog();
-      loadData();
+      await reloadUsers();
     } catch (err) {
       alert('Error saving user: ' + (err.response?.data?.detail || 'Unknown error'));
     }
@@ -620,7 +818,7 @@ function AdminDashboard() {
     if (window.confirm(`Are you sure you want to delete user "${username}"?`)) {
       try {
         await deleteUser(username);
-        loadData();
+        await reloadUsers();
       } catch (err) {
         alert(err.response?.data?.detail || 'Error deleting user');
       }
@@ -742,6 +940,7 @@ function AdminDashboard() {
         last_refill_date: dispenser.last_refill_date || null,
         installation_date: dispenser.installation_date || null,
         calculated_current_level: calculated,
+        fragrance_code: dispenser.fragrance_code || '',
       });
     } else {
       setEditingInstallation(null);
@@ -757,6 +956,7 @@ function AdminDashboard() {
         last_refill_date: null,
         installation_date: getCurrentISTISO(), // Default to current date in IST for new installations
         calculated_current_level: 0,
+        fragrance_code: '',
       });
     }
     setInstallationDialogOpen(true);
@@ -765,6 +965,20 @@ function AdminDashboard() {
   const handleCloseInstallationDialog = () => {
     setInstallationDialogOpen(false);
     setEditingInstallation(null);
+    setInstallationForm({
+      client_id: '',
+      location: '',
+      sku: '',
+      unique_code: '',
+      status: 'installed',
+      ml_per_hour: '',
+      schedule_id: '',
+      refill_amount_ml: 0,
+      last_refill_date: null,
+      installation_date: null,
+      calculated_current_level: 0,
+      fragrance_code: '',
+    });
   };
 
   const handleOpenAddMachineToClientDialog = (clientId) => {
@@ -847,7 +1061,7 @@ function AdminDashboard() {
       };
 
       await createDispenser(machineAssetData);
-      await loadData();
+      await reloadDispensers();
       handleCloseAddMachineToClientDialog();
       alert('Machine asset added to client successfully');
     } catch (error) {
@@ -932,7 +1146,7 @@ function AdminDashboard() {
       // Ensure installation_date is always set for new installations
       // For editing, preserve existing value if not provided, otherwise use form value or current date
       let installationDate = installationForm.installation_date;
-      if (!installationDate || installationDate.trim() === '') {
+      if (!installationDate || (typeof installationDate === 'string' && installationDate.trim() === '')) {
         if (editingInstallation) {
           // When editing, try to preserve existing installation_date from the machine
           const existingMachine = dispensers.find(d => d.id === (editingInstallation.id || assignedMachine?.id));
@@ -959,6 +1173,7 @@ function AdminDashboard() {
         installation_date: installationDate, // Always set installation date
         status: installationForm.status || 'installed', // Use status from form, default to "installed"
         sku: skuTemplate.sku, // Keep the same SKU reference
+        fragrance_code: installationForm.fragrance_code || null,
       };
 
       // If editing existing installation OR converting assigned machine to installed, use UPDATE
@@ -987,7 +1202,8 @@ function AdminDashboard() {
       }
       
       handleCloseInstallationDialog();
-      loadData();
+      await reloadDispensers();
+      await reloadRefillLogs();
     } catch (err) {
       alert('Error saving installation: ' + (err.response?.data?.detail || 'Unknown error'));
     }
@@ -1065,26 +1281,103 @@ function AdminDashboard() {
             zIndex: (theme) => theme.zIndex.drawer + 1,
           }}
         >
-          <Toolbar>
+          <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: 1 }}>
             <IconButton
               color="inherit"
               edge="start"
               onClick={handleDrawerToggle}
-              sx={{ mr: 2 }}
+              sx={{ mr: 1 }}
             >
               <Menu />
             </IconButton>
-            <Typography variant="h6" noWrap component="div">
+            <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
               Admin Dashboard
             </Typography>
+            <FormControl 
+              size="small" 
+              sx={{ 
+                minWidth: 160,
+                bgcolor: 'rgba(255, 255, 255, 0.15)',
+                borderRadius: 1,
+                '&:hover': {
+                  bgcolor: 'rgba(255, 255, 255, 0.25)',
+                },
+                '& .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'rgba(255, 255, 255, 0.3)',
+                },
+                '&:hover .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'rgba(255, 255, 255, 0.5)',
+                },
+                '& .Mui-focused .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'rgba(255, 255, 255, 0.7)',
+                },
+                '& .MuiInputLabel-root': {
+                  color: 'rgba(255, 255, 255, 0.9)',
+                },
+                '& .MuiInputLabel-root.Mui-focused': {
+                  color: 'rgba(255, 255, 255, 1)',
+                },
+                '& .MuiSelect-select': {
+                  color: 'white',
+                  fontSize: '0.875rem',
+                  py: 0.75,
+                },
+                '& .MuiSvgIcon-root': {
+                  color: 'rgba(255, 255, 255, 0.9)',
+                },
+              }}
+            >
+              <InputLabel sx={{ color: 'rgba(255, 255, 255, 0.9)' }}>View as Tech</InputLabel>
+              <Select
+                value={selectedTechnicianForView}
+                onChange={(e) => handleTechnicianViewChange(e.target.value)}
+                label="View as Tech"
+                sx={{ color: 'white' }}
+                MenuProps={{
+                  PaperProps: {
+                    sx: {
+                      mt: 0.5,
+                    },
+                  },
+                }}
+              >
+                <MenuItem value="">
+                  <em>Admin View</em>
+                </MenuItem>
+                {users.filter(u => u.role === 'technician').map((tech) => (
+                  <MenuItem key={tech.username} value={tech.username}>
+                    {tech.username}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
           </Toolbar>
         </AppBar>
         
-        <Container maxWidth="xl" sx={{ mt: { xs: 0, md: 0 }, mb: 4 }}>
-
-        {/* Technician View Selector */}
-        <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-          <FormControl sx={{ minWidth: 250 }}>
+        {/* Desktop Horizontal Navbar Toolbar - View as Technician */}
+        <Box
+          sx={{
+            display: { xs: 'none', md: 'flex' },
+            bgcolor: 'background.paper',
+            border: '1px solid',
+            borderColor: 'divider',
+            borderRadius: 2,
+            px: 2,
+            py: 1.25,
+            mb: 2.5,
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            gap: 2,
+            boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+          }}
+        >
+          <FormControl 
+            size="small" 
+            sx={{ 
+              minWidth: 220,
+              maxWidth: 300,
+            }}
+          >
             <InputLabel>View as Technician</InputLabel>
             <Select
               value={selectedTechnicianForView}
@@ -1103,13 +1396,16 @@ function AdminDashboard() {
           </FormControl>
           {technicianViewMode && (
             <Chip 
+              size="small"
               label={`Viewing as: ${selectedTechnicianForView}`} 
               color="primary" 
               onDelete={() => handleTechnicianViewChange('')}
-              deleteIcon={<Close />}
+              deleteIcon={<Close fontSize="small" />}
             />
           )}
         </Box>
+        
+        <Container maxWidth="xl" sx={{ mt: { xs: 0, md: 0 }, mb: 4 }}>
 
         {loading ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
@@ -1389,69 +1685,62 @@ function AdminDashboard() {
                               </Typography>
                             </Box>
                           ) : (
-                            <TableContainer>
-                              <Table>
-                                <TableHead>
-                                  <TableRow sx={{ bgcolor: 'grey.50' }}>
-                                    <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5 }}>Date & Time</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5 }}>Machine</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5 }}>Client</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5 }}>Amount</TableCell>
-                                    <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5 }}>Technician</TableCell>
-                                  </TableRow>
-                                </TableHead>
-                                <TableBody>
-                                  {installedRefillLogs
-                                    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-                                    .slice(0, 5)
-                                    .map((log, index) => {
-                                      const machine = dispensers.find((d) => d.id === log.dispenser_id);
+                            <ResponsiveTable
+                              columns={[
+                                {
+                                  id: 'timestamp',
+                                  label: 'Date & Time',
+                                  render: (value, row) => formatDateTimeIST(row.timestamp),
+                                },
+                                {
+                                  id: 'machine',
+                                  label: 'Machine',
+                                  render: (value, row) => {
+                                    const machine = dispensers.find((d) => d.id === row.dispenser_id);
                                       return (
-                                        <TableRow 
-                                          key={log.id} 
-                                          hover
-                                          sx={{ 
-                                            '&:hover': { bgcolor: 'action.hover' },
-                                            bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
-                                          }}
-                                        >
-                                          <TableCell sx={{ py: 1.5 }}>
-                                            <Typography variant="body2">
-                                              {formatDateTimeIST(log.timestamp)}
-                                            </Typography>
-                                          </TableCell>
-                                          <TableCell sx={{ py: 1.5 }}>
                                             <Chip 
-                                              label={machine?.sku || machine?.name || log.dispenser_id} 
+                                        label={machine?.sku || machine?.name || row.dispenser_id} 
                                               size="small" 
                                               variant="outlined"
                                               sx={{ fontWeight: 500 }}
                                             />
-                                          </TableCell>
-                                          <TableCell sx={{ py: 1.5 }}>
-                                            <Typography variant="body2" fontWeight={500}>
+                                    );
+                                  },
+                                },
+                                {
+                                  id: 'client',
+                                  label: 'Client',
+                                  render: (value, row) => {
+                                    const machine = dispensers.find((d) => d.id === row.dispenser_id);
+                                    return (
+                                      <Typography variant="body2" fontWeight={600}>
                                               {getClientName(machine?.client_id)}
                                             </Typography>
-                                          </TableCell>
-                                          <TableCell sx={{ py: 1.5 }}>
+                                    );
+                                  },
+                                  bold: true,
+                                },
+                                {
+                                  id: 'refill_amount_ml',
+                                  label: 'Amount',
+                                  render: (value) => (
                                             <Chip 
-                                              label={`${log.refill_amount_ml} ml`} 
+                                      label={`${value} ml`} 
                                               size="small" 
                                               color="success"
                                               sx={{ fontWeight: 500 }}
                                             />
-                                          </TableCell>
-                                          <TableCell sx={{ py: 1.5 }}>
-                                            <Typography variant="body2">
-                                              {log.technician_username}
-                                            </Typography>
-                                          </TableCell>
-                                        </TableRow>
-                                      );
-                                    })}
-                                </TableBody>
-                              </Table>
-                            </TableContainer>
+                                  ),
+                                },
+                                {
+                                  id: 'technician_username',
+                                  label: 'Technician',
+                                },
+                              ]}
+                              data={installedRefillLogs
+                                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+                                .slice(0, 5)}
+                            />
                           );
                         })()}
                       </CardContent>
@@ -1815,7 +2104,7 @@ function AdminDashboard() {
                             alert(`Successfully synced ${successCount} machine(s) across all clients with their SKU templates.`);
                           }
                           
-                          loadData();
+                          await reloadDispensers();
                         } catch (err) {
                           alert('Error syncing machines: ' + (err.response?.data?.detail || 'Unknown error'));
                         }
@@ -1827,73 +2116,111 @@ function AdminDashboard() {
                   </Button>
                 </Box>
 
-                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-                  <Table>
-                    <TableHead>
-                      <TableRow sx={{ bgcolor: 'grey.50' }}>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Client Name</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Contact Person</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Email</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Phone</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Address</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Installed Machines</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Actions</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
                       {clients.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={7} align="center" sx={{ py: 6 }}>
+                  <Card elevation={0} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 3, textAlign: 'center', py: 6 }}>
+                    <CardContent>
                             <Business sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
-                            <Typography color="text.secondary" variant="body1" sx={{ mb: 1 }}>
+                      <Typography color="text.secondary" variant="body1" sx={{ mb: 1, fontWeight: 500 }}>
                               No clients found
                             </Typography>
                             <Typography color="text.secondary" variant="body2">
                               Click "Add Client" to create your first client
                             </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        clients.map((client, index) => {
-                          const clientMachines = dispensers.filter((d) => d.client_id === client.id);
-                          return (
-                            <TableRow 
-                              key={client.id} 
-                              hover
-                              sx={{ 
-                                '&:hover': { bgcolor: 'action.hover' },
-                                bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
-                              }}
-                            >
-                              <TableCell sx={{ py: 2 }}>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <ResponsiveTable
+                    columns={[
+                      {
+                        id: 'name',
+                        label: 'Client Name',
+                        render: (value, row) => (
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                   <Business sx={{ fontSize: 18, color: 'primary.main' }} />
-                                  <Typography variant="body2" fontWeight={500}>
-                                    {client.name}
+                            <Typography variant="body2" fontWeight={600}>
+                              {row.name}
                                   </Typography>
                                 </Box>
-                              </TableCell>
-                              <TableCell sx={{ py: 2 }}>
-                                <Typography variant="body2">
-                                  {client.contact_person || '-'}
+                        ),
+                        bold: true,
+                      },
+                      {
+                        id: 'contact_person',
+                        label: 'Contact Person',
+                        render: (value) => value || '-',
+                      },
+                      {
+                        id: 'email',
+                        label: 'Email',
+                        render: (value) => (
+                          <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                            {value || '-'}
                                 </Typography>
-                              </TableCell>
-                              <TableCell sx={{ py: 2 }}>
-                                <Typography variant="body2">
-                                  {client.email || '-'}
+                        ),
+                      },
+                      {
+                        id: 'phone',
+                        label: 'Phone',
+                        render: (value) => value || '-',
+                      },
+                      {
+                        id: 'address',
+                        label: 'Address',
+                        render: (value) => (
+                          <Typography variant="body2" sx={{ maxWidth: { xs: '100%', md: 200 }, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: { xs: 'normal', md: 'nowrap' } }}>
+                            {value || '-'}
                                 </Typography>
-                              </TableCell>
-                              <TableCell sx={{ py: 2 }}>
-                                <Typography variant="body2">
-                                  {client.phone || '-'}
+                        ),
+                      },
+                      {
+                        id: 'client_id',
+                        label: 'Client ID',
+                        render: (value, row) => (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '0.8125rem' }}>
+                              {row.id || '-'}
                                 </Typography>
-                              </TableCell>
-                              <TableCell sx={{ py: 2 }}>
-                                <Typography variant="body2" sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {client.address || '-'}
+                            <IconButton
+                              size="small"
+                              onClick={() => {
+                                navigator.clipboard.writeText(row.id || '');
+                              }}
+                              sx={{ padding: '2px', color: 'primary.main' }}
+                            >
+                              <ContentCopy fontSize="small" />
+                            </IconButton>
+                          </Box>
+                        ),
+                      },
+                      {
+                        id: 'password',
+                        label: 'Password',
+                        render: (value, row) => (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '0.8125rem', color: 'text.primary' }}>
+                              {row.password_plain || row.generated_password || '-'}
                                 </Typography>
-                              </TableCell>
-                              <TableCell sx={{ py: 2 }}>
+                            {(row.password_plain || row.generated_password) && (
+                              <IconButton
+                                size="small"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(row.password_plain || row.generated_password || '');
+                                }}
+                                sx={{ padding: '2px', color: 'primary.main' }}
+                                title="Copy Password"
+                              >
+                                <ContentCopy fontSize="small" />
+                              </IconButton>
+                            )}
+                          </Box>
+                        ),
+                      },
+                      {
+                        id: 'machines',
+                        label: 'Installed Machines',
+                        render: (value, row) => {
+                          const clientMachines = dispensers.filter((d) => d.client_id === row.id);
+                          return (
                                 <Chip
                                   label={`${clientMachines.length} Machine${clientMachines.length !== 1 ? 's' : ''}`}
                                   size="small"
@@ -1901,9 +2228,13 @@ function AdminDashboard() {
                                   variant="outlined"
                                   sx={{ fontWeight: 500 }}
                                 />
-                              </TableCell>
-                              <TableCell sx={{ py: 2 }}>
-                                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                          );
+                        },
+                      },
+                    ]}
+                    data={clients}
+                    renderActions={(client) => (
+                      <>
                                   <IconButton
                                     size="small"
                                     color="info"
@@ -1943,91 +2274,179 @@ function AdminDashboard() {
                                   >
                                     <Delete fontSize="small" />
                                   </IconButton>
-                                </Box>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })
-                      )}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+                      </>
+                    )}
+                  />
+                )}
               </Box>
             )}
 
             {/* Users View */}
             {activeTab === 2 && (
               <Box>
-                <Box sx={{ mb: 4 }}>
-                  <Typography variant="h4" component="h1" sx={{ fontWeight: 400, mb: 1, color: 'text.primary', fontSize: '2rem' }}>
+                <Box sx={{ 
+                  mb: { xs: 2.5, sm: 3 }, 
+                  display: 'flex', 
+                  flexDirection: { xs: 'column', sm: 'row' },
+                  justifyContent: 'space-between',
+                  alignItems: { xs: 'flex-start', sm: 'center' },
+                  gap: { xs: 1.5, sm: 2 },
+                }}>
+                  <Box>
+                    <Typography variant="h5" component="h1" sx={{ fontWeight: 600, mb: 0.5, color: 'text.primary', fontSize: { xs: '1.5rem', sm: '1.75rem' } }}>
                     User Management
                   </Typography>
-                  <Typography variant="body1" color="text.secondary" sx={{ fontSize: '0.95rem' }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}>
                     Manage user accounts and access permissions
                   </Typography>
                 </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', mb: 3 }}>
                   <Button
                     variant="contained"
                     startIcon={<Add />}
                     onClick={() => handleOpenUserDialog()}
-                    sx={{ textTransform: 'none', borderRadius: 1.5 }}
+                    sx={{ 
+                      textTransform: 'none', 
+                      borderRadius: 2,
+                      px: 2.5,
+                      py: 1,
+                      fontSize: { xs: '0.875rem', sm: '0.9375rem' },
+                      fontWeight: 500,
+                      boxShadow: '0 2px 8px rgba(99, 102, 241, 0.3)',
+                      '&:hover': {
+                        boxShadow: '0 4px 12px rgba(99, 102, 241, 0.4)',
+                      },
+                    }}
                   >
                     Add User
                   </Button>
                 </Box>
 
-                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-                  <Table>
-                    <TableHead>
-                      <TableRow sx={{ bgcolor: 'grey.50' }}>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Username</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Role</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Actions</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
                       {users.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={3} align="center" sx={{ py: 6 }}>
-                            <People sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
-                            <Typography color="text.secondary" variant="body1">
-                              No users found. Click "Add User" to create one.
+                  <Card 
+                    elevation={0} 
+                    sx={{ 
+                      border: '1px solid', 
+                      borderColor: 'divider', 
+                      borderRadius: 3, 
+                      textAlign: 'center', 
+                      py: 8,
+                      bgcolor: 'background.paper',
+                    }}
+                  >
+                    <CardContent>
+                      <Box sx={{ 
+                        width: 80, 
+                        height: 80, 
+                        borderRadius: '50%', 
+                        bgcolor: 'grey.100',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        mx: 'auto',
+                        mb: 3,
+                      }}>
+                        <People sx={{ fontSize: 40, color: 'text.secondary' }} />
+                      </Box>
+                      <Typography color="text.primary" variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
+                        No users found
                             </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        users.map((usr, index) => (
-                          <TableRow 
-                            key={usr.username} 
-                            hover
+                      <Typography color="text.secondary" variant="body2" sx={{ mb: 3 }}>
+                        Get started by adding your first user account
+                      </Typography>
+                      <Button
+                        variant="contained"
+                        startIcon={<Add />}
+                        onClick={() => handleOpenUserDialog()}
+                        size="small"
+                        sx={{ textTransform: 'none', borderRadius: 2 }}
+                      >
+                        Add User
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <ResponsiveTable
+                    columns={[
+                      {
+                        id: 'username',
+                        label: 'User',
+                        render: (value, row) => (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.5 } }}>
+                            <Box
                             sx={{ 
-                              '&:hover': { bgcolor: 'action.hover' },
-                              bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
-                            }}
-                          >
-                            <TableCell sx={{ py: 2, fontWeight: 500 }}>{usr.username}</TableCell>
-                            <TableCell sx={{ py: 2 }}>
+                                width: { xs: 32, sm: 36 },
+                                height: { xs: 32, sm: 36 },
+                                borderRadius: '50%',
+                                bgcolor: 'primary.main',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: 'white',
+                                fontWeight: 600,
+                                fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                                flexShrink: 0,
+                              }}
+                            >
+                              {value.charAt(0).toUpperCase()}
+                            </Box>
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary', fontSize: { xs: '0.8125rem', sm: '0.875rem' }, lineHeight: 1.3 }}>
+                                {value}
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: { xs: '0.6875rem', sm: '0.75rem' }, display: { xs: 'none', sm: 'block' } }}>
+                                {row.role === 'admin' ? 'Administrator' : row.role === 'developer' ? 'Developer' : 'Technician'}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        ),
+                        bold: true,
+                      },
+                      {
+                        id: 'role',
+                        label: 'Role',
+                        render: (value) => {
+                          const roleConfig = {
+                            admin: { color: 'primary', label: 'Admin', icon: <AdminPanelSettings sx={{ fontSize: { xs: 14, sm: 16 } }} /> },
+                            developer: { color: 'secondary', label: 'Developer', icon: <Code sx={{ fontSize: { xs: 14, sm: 16 } }} /> },
+                            technician: { color: 'default', label: 'Technician', icon: <People sx={{ fontSize: { xs: 14, sm: 16 } }} /> },
+                          };
+                          const config = roleConfig[value] || { color: 'default', label: value, icon: <People sx={{ fontSize: { xs: 14, sm: 16 } }} /> };
+                          return (
                               <Chip
-                                label={usr.role.charAt(0).toUpperCase() + usr.role.slice(1)}
-                                color={
-                                  usr.role === 'developer'
-                                    ? 'secondary'
-                                    : usr.role === 'admin'
-                                    ? 'primary'
-                                    : 'default'
-                                }
+                              icon={config.icon}
+                              label={config.label}
+                              color={config.color}
                                 size="small"
-                                sx={{ fontWeight: 500 }}
-                              />
-                            </TableCell>
-                            <TableCell sx={{ py: 2 }}>
-                              <Box sx={{ display: 'flex', gap: 0.5 }}>
+                              sx={{ 
+                                fontWeight: 600,
+                                fontSize: { xs: '0.75rem', sm: '0.8125rem' },
+                                height: { xs: 24, sm: 28 },
+                                '& .MuiChip-icon': {
+                                  color: 'inherit',
+                                  marginLeft: { xs: '4px', sm: '6px' },
+                                },
+                              }}
+                            />
+                          );
+                        },
+                      },
+                    ]}
+                    data={users}
+                    renderActions={(usr) => (
+                      <>
                                 <IconButton
                                   size="small"
                                   color="primary"
                                   onClick={() => handleOpenUserDialog(usr)}
-                                  sx={{ '&:hover': { bgcolor: 'primary.light', color: 'white' } }}
+                          sx={{ 
+                            padding: { xs: '6px', sm: '8px' },
+                            '&:hover': { 
+                              bgcolor: 'primary.main', 
+                              color: 'white',
+                            },
+                            transition: 'all 0.2s',
+                          }}
+                          title="Edit User"
                                 >
                                   <Edit fontSize="small" />
                                 </IconButton>
@@ -2036,44 +2455,83 @@ function AdminDashboard() {
                                   color="error"
                                   onClick={() => handleDeleteUser(usr.username)}
                                   disabled={usr.username === user?.username}
-                                  sx={{ '&:hover': { bgcolor: 'error.light', color: 'white' } }}
+                          sx={{ 
+                            padding: { xs: '6px', sm: '8px' },
+                            '&:hover': { 
+                              bgcolor: 'error.main', 
+                              color: 'white',
+                            },
+                            '&.Mui-disabled': {
+                              opacity: 0.4,
+                            },
+                            transition: 'all 0.2s',
+                          }}
+                          title={usr.username === user?.username ? "Cannot delete your own account" : "Delete User"}
                                 >
                                   <Delete fontSize="small" />
                                 </IconButton>
-                              </Box>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+                      </>
+                    )}
+                    sx={{ '& > *': { mb: { xs: 1, sm: 1.5 } } }}
+                  />
+                )}
               </Box>
             )}
 
             {/* Refill Logs View */}
             {activeTab === 3 && (
               <Box>
-                <Box sx={{ mb: 4 }}>
-                  <Typography variant="h4" component="h1" sx={{ fontWeight: 400, mb: 1, color: 'text.primary', fontSize: '2rem' }}>
+                <Box sx={{ 
+                  mb: { xs: 2, sm: 2.5 }, 
+                  display: 'flex', 
+                  flexDirection: { xs: 'column', sm: 'row' },
+                  justifyContent: 'space-between',
+                  alignItems: { xs: 'flex-start', sm: 'center' },
+                  gap: { xs: 1.5, sm: 2 },
+                }}>
+                  <Box>
+                    <Typography variant="h5" component="h1" sx={{ fontWeight: 600, mb: 0.5, color: 'text.primary', fontSize: { xs: '1.25rem', sm: '1.5rem' } }}>
                     Refill Logs
                   </Typography>
-                  <Typography variant="body1" color="text.secondary" sx={{ fontSize: '0.95rem' }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}>
                     Track all refill activities and history
                   </Typography>
                 </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', mb: 3 }}>
                   <Button
                     variant="outlined"
+                    size="small"
                     startIcon={<Refresh />}
                     onClick={loadData}
-                    sx={{ textTransform: 'none', borderRadius: 1.5 }}
+                    sx={{ 
+                      textTransform: 'none', 
+                      borderRadius: 1.5,
+                      alignSelf: { xs: 'flex-start', sm: 'center' },
+                    }}
                   >
                     Refresh
                   </Button>
                 </Box>
-                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'auto', maxHeight: '80vh' }}>
-                  <Table stickyHeader>
+                <Box sx={{ 
+                  overflowX: 'auto',
+                  borderRadius: 3,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  '&::-webkit-scrollbar': {
+                    height: 8,
+                  },
+                  '&::-webkit-scrollbar-track': {
+                    background: '#f1f1f1',
+                  },
+                  '&::-webkit-scrollbar-thumb': {
+                    background: '#888',
+                    borderRadius: 4,
+                    '&:hover': {
+                      background: '#555',
+                    },
+                  },
+                }}>
+                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 3, border: 'none', overflow: 'auto', maxHeight: '80vh' }}>
+                  <Table stickyHeader sx={{ minWidth: 1200 }}>
                     <TableHead>
                       <TableRow sx={{ bgcolor: 'grey.50' }}>
                         <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, minWidth: 120 }}>Refill ID</TableCell>
@@ -2275,6 +2733,7 @@ function AdminDashboard() {
                     </TableBody>
                   </Table>
                 </TableContainer>
+                </Box>
               </Box>
             )}
 
@@ -2401,49 +2860,13 @@ function AdminDashboard() {
                   </CardContent>
                 </Card>
 
-                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-                  <Table>
-                    <TableHead>
-                      <TableRow sx={{ bgcolor: 'grey.50' }}>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Client</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Location</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>SKU</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Unique Code</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Status</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>ML Per Hour</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Schedule</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Capacity (ml)</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Current Level (ml)</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Daily ML Usage</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Installation Date</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Last Refill Date</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Next Refill Date</TableCell>
-                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Actions</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {dispensers.filter(d => d.client_id).length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={14} align="center" sx={{ py: 6 }}>
-                            <Devices sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
-                            <Typography color="text.secondary" variant="body1">
-                              No installed machines. Click "Create New Installation" to add one.
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ) : (() => {
-                        // Apply filters - Only show machines with status "Installed"
-                        // Machines with status "Assigned" should NOT appear in Installed tab
-                        // If status is missing, check if it was created from installation form (has schedule or location) - treat as "installed"
+                {(() => {
+                  // Apply filters first
                         let filteredDispensers = dispensers.filter(d => {
                           if (!d.client_id) return false;
-                          // Explicitly exclude "assigned" status
                           if (d.status === 'assigned') return false;
-                          // Show if status is "installed"
                           if (d.status === 'installed') return true;
-                          // If status is missing but has location and was likely created from installation form, show it
-                          // (for backward compatibility with existing installations)
-                          if (!d.status && d.location && d.location.trim() !== '') return true;
+                    if (!d.status && d.location && String(d.location).trim() !== '') return true;
                           return false;
                         });
                         
@@ -2486,36 +2909,252 @@ function AdminDashboard() {
                             }
                             
                             switch (installedFilters.status) {
-                              case 'good':
-                                return percentage >= 50;
-                              case 'medium':
-                                return percentage >= 20 && percentage < 50;
-                              case 'low':
-                                return percentage < 20;
-                              case 'urgent':
-                                return daysUntilRefill !== null && daysUntilRefill >= 0 && daysUntilRefill < 2;
-                              case 'overdue':
-                                return daysUntilRefill !== null && daysUntilRefill < 0;
-                              default:
-                                return true;
+                        case 'good': return percentage >= 50;
+                        case 'medium': return percentage >= 20 && percentage < 50;
+                        case 'low': return percentage < 20;
+                        case 'urgent': return daysUntilRefill !== null && daysUntilRefill >= 0 && daysUntilRefill < 2;
+                        case 'overdue': return daysUntilRefill !== null && daysUntilRefill < 0;
+                        default: return true;
                             }
                           });
                         }
                         
                         if (filteredDispensers.length === 0) {
                           return (
-                            <TableRow>
-                              <TableCell colSpan={14} align="center" sx={{ py: 6 }}>
+                      <Card elevation={0} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, textAlign: 'center', py: 6 }}>
+                        <CardContent>
                                 <Devices sx={{ fontSize: 48, color: 'text.disabled', mb: 2, opacity: 0.5 }} />
                                 <Typography color="text.secondary" variant="body1">
-                                  No machines match the selected filters.
+                            {dispensers.filter(d => d.client_id).length === 0 
+                              ? 'No installed machines. Click "Create New Installation" to add one.'
+                              : 'No machines match the selected filters.'}
                                 </Typography>
-                              </TableCell>
-                            </TableRow>
+                        </CardContent>
+                      </Card>
+                    );
+                  }
+
+                  // Card View
+                  if (installedViewMode === 'card') {
+                    return (
+                      <Box sx={{ 
+                        display: 'grid',
+                        gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', lg: 'repeat(3, 1fr)' },
+                        gap: 2,
+                        maxHeight: { xs: 'calc(100vh - 400px)', sm: 'calc(100vh - 350px)', md: 'calc(100vh - 300px)' },
+                        overflowY: 'auto',
+                        overflowX: 'hidden',
+                        pr: 1,
+                        '&::-webkit-scrollbar': {
+                          width: 8,
+                        },
+                        '&::-webkit-scrollbar-track': {
+                          background: '#f1f1f1',
+                        },
+                        '&::-webkit-scrollbar-thumb': {
+                          background: '#888',
+                          borderRadius: 4,
+                          '&:hover': {
+                            background: '#555',
+                          },
+                        },
+                      }}>
+                        {filteredDispensers.map((dispenser) => {
+                          const schedule = schedules.find(s => s.id === dispenser.current_schedule_id);
+                          const dailyUsage = usageData[dispenser.id]?.daily_usage_ml || 0;
+                          const lastRefill = dispenser.last_refill_date ? new Date(dispenser.last_refill_date) : null;
+                          
+                          let currentLevel = dispenser.current_level_ml;
+                          if (lastRefill && dailyUsage > 0 && schedule) {
+                            const now = new Date();
+                            const timeDiffMs = now - lastRefill;
+                            const daysElapsed = timeDiffMs / (1000 * 60 * 60 * 24);
+                            const refillAmount = dispenser.current_level_ml > 0 ? dispenser.current_level_ml : dispenser.refill_capacity_ml;
+                            const usageSinceRefill = daysElapsed * dailyUsage;
+                            currentLevel = Math.max(0, Math.min(refillAmount - usageSinceRefill, dispenser.refill_capacity_ml));
+                          }
+                          
+                          const percentage = (currentLevel / dispenser.refill_capacity_ml) * 100;
+                          let urgencyColor = 'success';
+                          if (percentage < 20) urgencyColor = 'error';
+                          else if (percentage < 50) urgencyColor = 'warning';
+                          
+                          return (
+                            <Card key={dispenser.id} elevation={0} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden' }}>
+                              <CardContent sx={{ p: 2 }}>
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+                                  <Box>
+                                    <Typography variant="body2" fontWeight={600} sx={{ fontSize: '0.9375rem', mb: 0.5 }}>
+                                      {getClientName(dispenser.client_id)}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                                      {dispenser.location || 'No location'}
+                                    </Typography>
+                                  </Box>
+                                  <Chip 
+                                    label={dispenser.status === 'installed' ? 'Installed' : 'N/A'} 
+                                    size="small" 
+                                    color="success"
+                                    sx={{ fontSize: '0.6875rem', height: 22 }}
+                                  />
+                                </Box>
+                                
+                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>SKU</Typography>
+                                    <Chip label={dispenser.sku || 'N/A'} size="small" variant="outlined" sx={{ fontSize: '0.75rem', height: 22 }} />
+                                  </Box>
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>Code</Typography>
+                                    <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
+                                      {dispenser.unique_code || '-'}
+                                    </Typography>
+                                  </Box>
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>Fragrance Code</Typography>
+                                    <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
+                                      {dispenser.fragrance_code || '-'}
+                                    </Typography>
+                                  </Box>
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>Level</Typography>
+                                    <Box sx={{ textAlign: 'right' }}>
+                                      <Typography variant="body2" fontWeight={600} sx={{ fontSize: '0.8125rem' }}>
+                                        {currentLevel.toFixed(1)} / {dispenser.refill_capacity_ml} ml
+                                      </Typography>
+                                      <LinearProgress variant="determinate" value={percentage} color={urgencyColor} sx={{ height: 4, borderRadius: 1, mt: 0.5, width: 80 }} />
+                                    </Box>
+                                  </Box>
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>ML/Hr</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
+                                      {dispenser.ml_per_hour || 'N/A'}
+                                    </Typography>
+                                  </Box>
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>Schedule</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: '0.8125rem', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                      {schedule?.name || 'No Schedule'}
+                                    </Typography>
+                                  </Box>
+                                  
+                                  <Divider sx={{ my: 0.5 }} />
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>Daily Usage</Typography>
+                                    <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
+                                      {dailyUsage > 0 ? `${dailyUsage.toFixed(2)} ml` : 'N/A'}
+                                    </Typography>
+                                  </Box>
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem', fontWeight: 600 }}>Next Refill</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
+                                      {(() => {
+                                        if (!dailyUsage || dailyUsage === 0) return 'N/A';
+                                        const daysUntilEmpty = currentLevel / dailyUsage;
+                                        const daysUntilRefill = daysUntilEmpty - 2;
+                                        if (daysUntilRefill < 0) {
+                                          return <Typography variant="body2" color="error.main" sx={{ fontSize: '0.8125rem' }}>Overdue</Typography>;
+                                        } else if (daysUntilRefill < 2) {
+                                          return <Typography variant="body2" color="warning.main" sx={{ fontSize: '0.8125rem' }}>Urgent</Typography>;
+                                        } else {
+                                          const nextDate = new Date();
+                                          nextDate.setDate(nextDate.getDate() + Math.round(daysUntilRefill));
+                                          return formatDateIST(nextDate);
+                                        }
+                                      })()}
+                                    </Typography>
+                                  </Box>
+                                  
+                                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mt: 1, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
+                                    <IconButton
+                                      size="small"
+                                      color="primary"
+                                      onClick={() => handleOpenInstallationDialog(dispenser)}
+                                      sx={{ padding: '4px' }}
+                                    >
+                                      <Edit fontSize="small" />
+                                    </IconButton>
+                                    <IconButton
+                                      size="small"
+                                      color="error"
+                                      onClick={() => handleDeleteMachine(dispenser.id, dispenser.name || dispenser.sku)}
+                                      sx={{ padding: '4px' }}
+                                    >
+                                      <Delete fontSize="small" />
+                                    </IconButton>
+                                  </Box>
+                                </Box>
+                              </CardContent>
+                            </Card>
                           );
-                        }
-                        
-                        return filteredDispensers.map((dispenser, index) => {
+                        })}
+                      </Box>
+                    );
+                  }
+
+                  // Table View
+                  return (
+                    <Box sx={{ 
+                      overflowX: 'auto',
+                      overflowY: 'auto',
+                      maxHeight: { xs: 'calc(100vh - 400px)', sm: 'calc(100vh - 350px)', md: 'calc(100vh - 300px)' },
+                      borderRadius: 2,
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      '&::-webkit-scrollbar': {
+                        width: 8,
+                        height: 8,
+                      },
+                      '&::-webkit-scrollbar-track': {
+                        background: '#f1f1f1',
+                      },
+                      '&::-webkit-scrollbar-thumb': {
+                        background: '#888',
+                        borderRadius: 4,
+                        '&:hover': {
+                          background: '#555',
+                        },
+                      },
+                    }}>
+                      <TableContainer 
+                        component={Paper} 
+                        elevation={0} 
+                        sx={{ 
+                          borderRadius: 2, 
+                          border: 'none', 
+                          overflow: 'visible',
+                          minWidth: 1500,
+                        }}
+                      >
+                        <Table stickyHeader sx={{ minWidth: 1500 }}>
+                    <TableHead>
+                      <TableRow sx={{ bgcolor: 'grey.50' }}>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Client</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Location</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>SKU</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Unique Code</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Fragrance Code</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Status</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>ML/Hr</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Schedule</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Capacity</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Current Level</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Daily Usage</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Install Date</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Last Refill</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Next Refill</TableCell>
+                        <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 1.5, px: 2, fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>Actions</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                        {filteredDispensers.map((dispenser, index) => {
                             const schedule = schedules.find(s => s.id === dispenser.current_schedule_id);
                             const dailyUsage = usageData[dispenser.id]?.daily_usage_ml || 0;
                             
@@ -2574,33 +3213,37 @@ function AdminDashboard() {
                                   bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
                                 }}
                               >
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" fontWeight={500}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
                                     {getClientName(dispenser.client_id)}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2">
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
                                     {dispenser.location || '-'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
                                   <Chip 
                                     label={dispenser.sku || 'N/A'} 
                                     size="small" 
                                     variant="outlined"
-                                    sx={{ fontWeight: 500 }}
+                                    sx={{ fontWeight: 500, fontSize: '0.75rem', height: 24 }}
                                   />
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" fontWeight={500}>
-                                    {dispenser.unique_code && dispenser.unique_code.trim() !== '' ? dispenser.unique_code : '-'}
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
+                                    {dispenser.unique_code && String(dispenser.unique_code).trim() !== '' ? String(dispenser.unique_code) : '-'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
+                                    {dispenser.fragrance_code || '-'}
+                                  </Typography>
+                                </TableCell>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
                                   {(() => {
-                                    // Determine the actual status - if missing but has location, treat as "installed"
-                                    const actualStatus = dispenser.status || (dispenser.location && dispenser.location.trim() !== '' ? 'installed' : null);
+                                    const actualStatus = dispenser.status || (dispenser.location && String(dispenser.location).trim() !== '' ? 'installed' : null);
                                     if (actualStatus) {
                                       return (
                                         <Chip 
@@ -2608,6 +3251,7 @@ function AdminDashboard() {
                                           size="small" 
                                           color={actualStatus === 'assigned' ? 'primary' : actualStatus === 'installed' ? 'success' : 'default'}
                                           variant="outlined"
+                                          sx={{ fontSize: '0.75rem', height: 24 }}
                                         />
                                       );
                                     }
@@ -2617,91 +3261,91 @@ function AdminDashboard() {
                                         size="small" 
                                         color="default"
                                         variant="outlined"
+                                        sx={{ fontSize: '0.75rem', height: 24 }}
                                       />
                                     );
                                   })()}
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" fontWeight={500}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
                                     {dispenser.ml_per_hour ? `${dispenser.ml_per_hour} ml/hr` : 'N/A'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2">
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" sx={{ fontSize: '0.8125rem', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                     {schedule ? schedule.name : 'No Schedule'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" fontWeight={500}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
                                     {dispenser.refill_capacity_ml} ml
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" fontWeight={500}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
                                     {currentLevel.toFixed(1)} ml
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2" fontWeight={500}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" fontWeight={500} sx={{ fontSize: '0.8125rem' }}>
                                     {dailyUsage > 0 ? `${dailyUsage.toFixed(2)} ml` : 'N/A'}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2">
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
                                     {formatDateIST(dispenser.installation_date)}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
-                                  <Typography variant="body2">
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
+                                  <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
                                     {formatDateIST(dispenser.last_refill_date)}
                                   </Typography>
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
                                   {(() => {
-                                    if (!dailyUsage || dailyUsage === 0) return 'N/A';
+                                    if (!dailyUsage || dailyUsage === 0) return <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>N/A</Typography>;
                                     
-                                    // Calculate days until current level runs out, minus 2 days
                                     const daysUntilEmpty = currentLevel / dailyUsage;
                                     const daysUntilRefill = daysUntilEmpty - 2;
                                     
                                     if (daysUntilRefill < 0) {
-                                      // Overdue - should have been refilled already
                                       const overdueDays = Math.abs(daysUntilRefill);
                                       return (
                                         <Box>
-                                          <Typography variant="body2" color="error.main">
+                                          <Typography variant="body2" color="error.main" sx={{ fontSize: '0.8125rem' }}>
                                             {nextRefillDate ? formatDateIST(nextRefillDate) : 'N/A'}
                                           </Typography>
-                                          <Typography variant="caption" color="error.main">
-                                            Overdue ({overdueDays.toFixed(1)} days ago)
+                                          <Typography variant="caption" color="error.main" sx={{ fontSize: '0.6875rem' }}>
+                                            Overdue ({overdueDays.toFixed(1)}d)
                                           </Typography>
                                         </Box>
                                       );
                                     } else if (daysUntilRefill < 2) {
-                                      // Urgent - less than 2 days
                                       return (
                                         <Box>
-                                          <Typography variant="body2">
+                                          <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>
                                             {nextRefillDate ? formatDateIST(nextRefillDate) : 'N/A'}
                                           </Typography>
-                                          <Typography variant="caption" color="warning.main">
-                                            Urgent ({daysUntilRefill.toFixed(1)} days)
+                                          <Typography variant="caption" color="warning.main" sx={{ fontSize: '0.6875rem' }}>
+                                            Urgent ({daysUntilRefill.toFixed(1)}d)
                                           </Typography>
                                         </Box>
                                       );
                                     } else {
-                                      // Normal
-                                      return nextRefillDate ? formatDateIST(nextRefillDate) : 'N/A';
+                                      return nextRefillDate ? <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>{formatDateIST(nextRefillDate)}</Typography> : <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>N/A</Typography>;
                                     }
                                   })()}
                                 </TableCell>
-                                <TableCell sx={{ py: 2 }}>
+                                <TableCell sx={{ py: 1.25, px: 2, whiteSpace: 'nowrap' }}>
                                   <Box sx={{ display: 'flex', gap: 0.5 }}>
                                     <IconButton
                                       size="small"
                                       color="primary"
                                       onClick={() => handleOpenInstallationDialog(dispenser)}
-                                      sx={{ '&:hover': { bgcolor: 'primary.light', color: 'white' } }}
+                                      sx={{ 
+                                        padding: '4px',
+                                        '&:hover': { bgcolor: 'primary.main', color: 'white' } 
+                                      }}
                                     >
                                       <Edit fontSize="small" />
                                     </IconButton>
@@ -2710,7 +3354,10 @@ function AdminDashboard() {
                                       color="error"
                                       onClick={() => handleDeleteMachine(dispenser.id, dispenser.name || dispenser.sku)}
                                       title="Delete Installation"
-                                      sx={{ '&:hover': { bgcolor: 'error.light', color: 'white' } }}
+                                      sx={{ 
+                                        padding: '4px',
+                                        '&:hover': { bgcolor: 'error.main', color: 'white' } 
+                                      }}
                                     >
                                       <Delete fontSize="small" />
                                     </IconButton>
@@ -2718,11 +3365,13 @@ function AdminDashboard() {
                                 </TableCell>
                               </TableRow>
                             );
-                        });
-                      })()}
+                        })}
                     </TableBody>
                   </Table>
                 </TableContainer>
+                    </Box>
+                  );
+                })()}
                 
                 {/* Results count */}
                 {(() => {
@@ -2837,20 +3486,39 @@ function AdminDashboard() {
                 {/* Machine List Sub-Tab */}
                 {assignTaskSubTab === 0 && (
                   <>
-                    <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-                      <Table>
+                    <Box sx={{ 
+                      overflowX: 'auto',
+                      borderRadius: 2,
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      '&::-webkit-scrollbar': {
+                        height: 8,
+                      },
+                      '&::-webkit-scrollbar-track': {
+                        background: '#f1f1f1',
+                      },
+                      '&::-webkit-scrollbar-thumb': {
+                        background: '#888',
+                        borderRadius: 4,
+                        '&:hover': {
+                          background: '#555',
+                        },
+                      },
+                    }}>
+                      <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: 'none', overflow: 'visible', minWidth: 1200 }}>
+                        <Table sx={{ minWidth: 1200 }}>
                         <TableHead>
                           <TableRow sx={{ bgcolor: 'grey.50' }}>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Client</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Location</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>SKU</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Unique Code</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Current Level</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Installation Date</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Last Refill Date</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Next Due Date</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Action</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Client</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Location</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>SKU</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Unique Code</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Current Level</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Installation Date</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Last Refill Date</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Next Due Date</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Status</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Action</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
@@ -2890,7 +3558,7 @@ function AdminDashboard() {
                                 if (!d.client_id) return false;
                                 if (d.status === 'assigned') return false;
                                 if (d.status === 'installed') return true;
-                                if (!d.status && d.location && d.location.trim() !== '') return true;
+                                if (!d.status && d.location && String(d.location).trim() !== '') return true;
                                 return false;
                               })
                               .map(d => ({
@@ -3008,7 +3676,7 @@ function AdminDashboard() {
                                       {dispenser.unique_code || '-'}
                                     </Typography>
                                   </TableCell>
-                                  <TableCell sx={{ py: 2 }}>
+                                  <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                     <Box>
                                       <Typography variant="body2" fontWeight={500}>
                                         {currentLevel.toFixed(1)} / {dispenser.refill_capacity_ml} ml
@@ -3021,19 +3689,19 @@ function AdminDashboard() {
                                       />
                                     </Box>
                                   </TableCell>
-                                  <TableCell sx={{ py: 2 }}>
+                                  <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                     <Typography variant="body2">
                                       {dispenser.installation_date 
                                         ? new Date(dispenser.installation_date).toLocaleDateString() 
                                         : 'N/A'}
                                     </Typography>
                                   </TableCell>
-                                  <TableCell sx={{ py: 2 }}>
+                                  <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                     <Typography variant="body2">
                                       {formatDateIST(dispenser.last_refill_date)}
                                     </Typography>
                                   </TableCell>
-                                  <TableCell sx={{ py: 2 }}>
+                                  <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                     {nextDueDate ? (
                                       <Box>
                                         <Typography 
@@ -3063,7 +3731,7 @@ function AdminDashboard() {
                                       <Typography variant="body2" color="text.secondary">N/A</Typography>
                                     )}
                                   </TableCell>
-                                  <TableCell sx={{ py: 2 }}>
+                                  <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                     <Chip
                                       label={urgencyStatus.charAt(0).toUpperCase() + urgencyStatus.slice(1)}
                                       size="small"
@@ -3071,7 +3739,7 @@ function AdminDashboard() {
                                       sx={{ fontWeight: 500 }}
                                     />
                                   </TableCell>
-                                  <TableCell sx={{ py: 2 }}>
+                                  <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                     <Button
                                       variant="contained"
                                       size="small"
@@ -3095,6 +3763,7 @@ function AdminDashboard() {
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    </Box>
 
                     <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-start', alignItems: 'center' }}>
                       <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
@@ -3102,7 +3771,7 @@ function AdminDashboard() {
                           if (!d.client_id) return false;
                           if (d.status === 'assigned') return false;
                           if (d.status === 'installed') return true;
-                          if (!d.status && d.location && d.location.trim() !== '') return true;
+                          if (!d.status && d.location && String(d.location).trim() !== '') return true;
                           return false;
                         }).length}</strong> installed machines (sorted by next due date)
                       </Typography>
@@ -3113,21 +3782,40 @@ function AdminDashboard() {
                 {/* Assigned Tasks Sub-Tab */}
                 {assignTaskSubTab === 1 && (
                   <>
-                    <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-                      <Table>
+                    <Box sx={{ 
+                      overflowX: 'auto',
+                      borderRadius: 2,
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      '&::-webkit-scrollbar': {
+                        height: 8,
+                      },
+                      '&::-webkit-scrollbar-track': {
+                        background: '#f1f1f1',
+                      },
+                      '&::-webkit-scrollbar-thumb': {
+                        background: '#888',
+                        borderRadius: 4,
+                        '&:hover': {
+                          background: '#555',
+                        },
+                      },
+                    }}>
+                      <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: 'none', overflow: 'visible', minWidth: 1300 }}>
+                        <Table sx={{ minWidth: 1300 }}>
                         <TableHead>
                           <TableRow sx={{ bgcolor: 'grey.50' }}>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Client</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Location</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Machine Code</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>SKU</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Service Type</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Technician</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Assigned By</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Assigned Date</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Visit Date</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2 }}>Actions</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Client</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Location</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Machine Code</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>SKU</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Service Type</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Technician</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Assigned By</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Assigned Date</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Visit Date</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Status</TableCell>
+                              <TableCell sx={{ fontWeight: 600, color: 'text.primary', py: 2, whiteSpace: 'nowrap' }}>Actions</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
@@ -3162,29 +3850,29 @@ function AdminDashboard() {
                                       bgcolor: index % 2 === 0 ? 'white' : 'grey.50'
                                     }}
                                   >
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Typography variant="body2" fontWeight={500}>
                                         {getClientName(clientId)}
                                       </Typography>
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Typography variant="body2">
                                         {isInstallation ? 'Installation Task' : (dispenser?.location || '-')}
                                       </Typography>
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Typography variant="body2" fontWeight={500}>
                                         {isInstallation ? '-' : (dispenser?.unique_code || '-')}
                                       </Typography>
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Chip 
                                         label={isInstallation ? 'N/A' : (dispenser?.sku || 'N/A')} 
                                         size="small" 
                                         variant="outlined"
                                       />
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Chip 
                                         label={task.task_type?.charAt(0).toUpperCase() + task.task_type?.slice(1) || 'Refill'}
                                         size="small"
@@ -3199,7 +3887,7 @@ function AdminDashboard() {
                                         }
                                       />
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                         <People sx={{ fontSize: 16, color: 'primary.main' }} />
                                         <Typography variant="body2">
@@ -3207,17 +3895,17 @@ function AdminDashboard() {
                                         </Typography>
                                       </Box>
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Typography variant="body2">
                                         {task.assigned_by || '-'}
                                       </Typography>
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Typography variant="body2">
                                         {formatDateIST(task.assigned_date)}
                                       </Typography>
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                         <EventNote sx={{ fontSize: 16, color: 'info.main' }} />
                                         <Typography variant="body2">
@@ -3225,7 +3913,7 @@ function AdminDashboard() {
                                         </Typography>
                                       </Box>
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Chip 
                                         label={
                                           task.status === 'completed' ? 'Completed' :
@@ -3240,7 +3928,7 @@ function AdminDashboard() {
                                         }
                                       />
                                     </TableCell>
-                                    <TableCell sx={{ py: 2 }}>
+                                    <TableCell sx={{ py: 2, whiteSpace: 'nowrap' }}>
                                       <Box sx={{ display: 'flex', gap: 1 }}>
                                         <IconButton
                                           size="small"
@@ -3279,6 +3967,7 @@ function AdminDashboard() {
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    </Box>
 
                     <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-start', alignItems: 'center' }}>
                       <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
@@ -3347,6 +4036,145 @@ function AdminDashboard() {
           <Button onClick={handleCloseClientDialog}>Cancel</Button>
           <Button onClick={handleSaveClient} variant="contained" disabled={!clientForm.name}>
             {editingClient ? 'Update' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Client Credentials Dialog */}
+      <Dialog 
+        open={clientCredentialsDialogOpen} 
+        onClose={() => setClientCredentialsDialogOpen(false)} 
+        maxWidth="sm" 
+        fullWidth
+      >
+        <DialogTitle sx={{ pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <CheckCircle sx={{ color: 'success.main', fontSize: 28 }} />
+            <Typography variant="h6" component="span">
+              Client Created Successfully
+            </Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2" fontWeight={600} gutterBottom>
+              Save these credentials - they cannot be retrieved later!
+            </Typography>
+            <Typography variant="caption">
+              Share these login details with the client. They can use these to access their dashboard.
+            </Typography>
+          </Alert>
+          
+          <Box sx={{ 
+            p: 3, 
+            bgcolor: 'grey.50', 
+            borderRadius: 2, 
+            border: '1px solid', 
+            borderColor: 'divider',
+            mb: 2
+          }}>
+            <Typography variant="subtitle2" color="text.secondary" gutterBottom sx={{ mb: 2, fontWeight: 600 }}>
+              Client Login Credentials
+            </Typography>
+            
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem', fontWeight: 600 }}>
+                Client Name
+              </Typography>
+              <Typography variant="body1" sx={{ mt: 0.5, fontWeight: 500 }}>
+                {newClientCredentials?.clientName || '-'}
+              </Typography>
+            </Box>
+            
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem', fontWeight: 600 }}>
+                Client ID (Username)
+              </Typography>
+              <Box sx={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: 1, 
+                mt: 0.5,
+                p: 1.5,
+                bgcolor: 'background.paper',
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider'
+              }}>
+                <Typography variant="body1" sx={{ fontFamily: 'monospace', fontWeight: 600, flex: 1 }}>
+                  {newClientCredentials?.clientId || '-'}
+                </Typography>
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    navigator.clipboard.writeText(newClientCredentials?.clientId || '');
+                  }}
+                  sx={{ color: 'primary.main' }}
+                >
+                  <ContentCopy fontSize="small" />
+                </IconButton>
+              </Box>
+            </Box>
+            
+            <Box>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem', fontWeight: 600 }}>
+                Password
+              </Typography>
+              <Box sx={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: 1, 
+                mt: 0.5,
+                p: 1.5,
+                bgcolor: 'background.paper',
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider'
+              }}>
+                <Typography variant="body1" sx={{ fontFamily: 'monospace', fontWeight: 600, flex: 1 }}>
+                  {newClientCredentials?.password || '-'}
+                </Typography>
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    navigator.clipboard.writeText(newClientCredentials?.password || '');
+                  }}
+                  sx={{ color: 'primary.main' }}
+                >
+                  <ContentCopy fontSize="small" />
+                </IconButton>
+              </Box>
+            </Box>
+          </Box>
+          
+          <Box sx={{ 
+            p: 2, 
+            bgcolor: 'warning.light', 
+            borderRadius: 1, 
+            border: '1px solid', 
+            borderColor: 'warning.main',
+            opacity: 0.1
+          }}>
+            <Typography variant="caption" color="warning.dark" sx={{ fontSize: '0.75rem' }}>
+              ⚠️ Important: This password is shown only once. Make sure to save it securely.
+            </Typography>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button 
+            onClick={() => {
+              const text = `Client ID: ${newClientCredentials?.clientId}\nPassword: ${newClientCredentials?.password}`;
+              navigator.clipboard.writeText(text);
+            }}
+            startIcon={<ContentCopy />}
+          >
+            Copy All
+          </Button>
+          <Button 
+            onClick={() => setClientCredentialsDialogOpen(false)} 
+            variant="contained"
+          >
+            Done
           </Button>
         </DialogActions>
       </Dialog>
@@ -3545,7 +4373,7 @@ function AdminDashboard() {
                         d.client_id === installationForm.client_id && 
                         d.sku === selectedSku &&
                         d.unique_code &&
-                        d.unique_code.trim() !== ''
+                        String(d.unique_code).trim() !== ''
                       )
                     : [];
                   
@@ -3598,7 +4426,7 @@ function AdminDashboard() {
               d.client_id === installationForm.client_id && 
               d.sku === installationForm.sku &&
               d.unique_code &&
-              d.unique_code.trim() !== ''
+              String(d.unique_code).trim() !== ''
             );
             
             if (clientAssets.length === 0) {
@@ -3877,6 +4705,17 @@ function AdminDashboard() {
               </Typography>
             </Box>
           )}
+
+          <TextField
+            fullWidth
+            label="Fragrance Code"
+            placeholder="e.g., FRG001, LAVENDER, etc."
+            value={installationForm.fragrance_code || ''}
+            onChange={(e) => setInstallationForm({ ...installationForm, fragrance_code: e.target.value })}
+            margin="normal"
+            required
+            helperText="Enter the fragrance code used in this machine"
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCloseInstallationDialog}>Cancel</Button>
@@ -4131,7 +4970,7 @@ function AdminDashboard() {
                               
                               await Promise.all(updatePromises);
                               alert(`Successfully synced ${machinesToSync.length} machine(s) with their SKU templates.`);
-                              loadData();
+                              await reloadDispensers();
                             } catch (err) {
                               alert('Error syncing machines: ' + (err.response?.data?.detail || 'Unknown error'));
                             }
@@ -4192,7 +5031,7 @@ function AdminDashboard() {
                                 </TableCell>
                                 <TableCell sx={{ py: 1.5 }}>
                                   <Typography variant="body2" fontWeight={500}>
-                                    {asset.unique_code && asset.unique_code.trim() !== '' ? asset.unique_code : '-'}
+                                    {asset.unique_code && String(asset.unique_code).trim() !== '' ? String(asset.unique_code) : '-'}
                                   </Typography>
                                 </TableCell>
                                 <TableCell sx={{ py: 1.5 }}>
@@ -4495,7 +5334,7 @@ function AdminDashboard() {
                   setSelectedTechnician('');
                   setAssignVisitDate('');
                   setAssignServiceType('refill');
-                  loadData(); // Refresh data
+                  await reloadAssignments();
                 } catch (err) {
                   alert('Error assigning technician: ' + (err.response?.data?.detail || 'Unknown error'));
                 }
@@ -4867,7 +5706,7 @@ function AdminDashboard() {
                     technician_username: '',
                     notes: '',
                   });
-                  loadData(); // Refresh data
+                  await reloadAssignments();
                 } catch (err) {
                   alert('Error assigning task: ' + (err.response?.data?.detail || 'Unknown error'));
                 }

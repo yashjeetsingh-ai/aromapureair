@@ -4,9 +4,11 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import HomePage from './components/HomePage';
 import Login from './components/Login';
+import ClientLogin from './components/ClientLogin';
 import TechnicianDashboard from './components/TechnicianDashboard';
 import AdminDashboard from './components/AdminDashboard';
 import DeveloperDashboard from './components/DeveloperDashboard';
+import ClientDashboard from './components/ClientDashboard';
 import { AuthContext } from './context/AuthContext';
 
 const theme = createTheme({
@@ -21,38 +23,38 @@ const theme = createTheme({
   },
   palette: {
     primary: {
-      main: '#1976d2', // Professional Blue
-      light: '#42a5f5',
-      dark: '#1565c0',
+      main: '#6366f1', // Premium Indigo
+      light: '#818cf8',
+      dark: '#4f46e5',
       contrastText: '#ffffff',
     },
     secondary: {
-      main: '#424242', // Professional Gray
-      light: '#6d6d6d',
-      dark: '#1d1d1d',
+      main: '#64748b', // Professional Slate
+      light: '#94a3b8',
+      dark: '#475569',
     },
     background: {
-      default: '#f5f5f5',
+      default: '#f8fafc',
       paper: '#ffffff',
     },
     text: {
-      primary: '#212121',
-      secondary: '#757575',
+      primary: '#0f172a',
+      secondary: '#64748b',
     },
     success: {
-      main: '#2e7d32',
-      light: '#4caf50',
-      dark: '#1b5e20',
+      main: '#10b981',
+      light: '#34d399',
+      dark: '#059669',
     },
     warning: {
-      main: '#ed6c02',
-      light: '#ff9800',
-      dark: '#e65100',
+      main: '#f59e0b',
+      light: '#fbbf24',
+      dark: '#d97706',
     },
     error: {
-      main: '#d32f2f',
-      light: '#ef5350',
-      dark: '#c62828',
+      main: '#ef4444',
+      light: '#f87171',
+      dark: '#dc2626',
     },
     grey: {
       50: '#fafafa',
@@ -203,6 +205,10 @@ function App() {
               element={user ? <Navigate to={`/${user.role}`} /> : <Login />}
             />
             <Route
+              path="/client-login"
+              element={user ? <Navigate to={`/${user.role}`} /> : <ClientLogin />}
+            />
+            <Route
               path="/technician"
               element={
                 user?.role === 'technician' ? (
@@ -227,6 +233,16 @@ function App() {
               element={
                 user?.role === 'developer' ? (
                   <DeveloperDashboard />
+                ) : (
+                  <Navigate to="/login" />
+                )
+              }
+            />
+            <Route
+              path="/client"
+              element={
+                user?.role === 'client' ? (
+                  <ClientDashboard />
                 ) : (
                   <Navigate to="/login" />
                 )

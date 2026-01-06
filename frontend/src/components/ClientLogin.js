@@ -11,11 +11,11 @@ import {
   Link,
 } from '@mui/material';
 import { AuthContext } from '../context/AuthContext';
-import { login as loginApi } from '../services/api';
+import { clientLogin } from '../services/api';
 import Logo from './Logo';
 
-function Login() {
-  const [username, setUsername] = useState('');
+function ClientLogin() {
+  const [clientId, setClientId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const { login } = useContext(AuthContext);
@@ -26,21 +26,21 @@ function Login() {
     setError('');
 
     try {
-      // Staff login only (admin, technician, developer)
-      const userData = await loginApi(username, password);
+      // Client login only
+      const userData = await clientLogin(clientId, password);
       
-      // Verify it's a staff role, not a client
-      if (userData.role === 'client') {
-        setError('Client login is not allowed here. Please use the Client Portal.');
+      // Verify it's a client role
+      if (userData.role !== 'client') {
+        setError('Staff login is not allowed here. Please use the Staff Login page.');
         return;
       }
       
       login(userData);
       navigate(`/${userData.role}`);
     } catch (err) {
-      console.error('Login error:', err);
+      console.error('Client login error:', err);
       if (err.response) {
-        setError(err.response.data?.detail || 'Login failed. Please check your credentials.');
+        setError(err.response.data?.detail || 'Login failed. Please check your Client ID and password.');
       } else if (err.request) {
         setError('Network error: Could not reach the server. Please check your connection.');
       } else if (err.message) {
@@ -80,10 +80,10 @@ function Login() {
               <Logo size="large" color="primary" />
             </Box>
             <Typography variant="subtitle1" component="h2" gutterBottom color="text.secondary" sx={{ fontWeight: 500, mb: 1, fontSize: { xs: '1rem', sm: '1.125rem' } }}>
-              Management System
+              Client Portal
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2, fontSize: { xs: '0.875rem', sm: '0.9375rem' } }}>
-              Staff login - Sign in to access your dashboard
+              Sign in to view your machines and refill history
             </Typography>
           </Box>
 
@@ -96,13 +96,13 @@ function Login() {
           <form onSubmit={handleSubmit}>
             <TextField
               fullWidth
-              label="Username"
+              label="Client ID"
               variant="outlined"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
               margin="normal"
               required
-              helperText="For clients, please use the Client Portal"
+              helperText="Enter your Client ID provided by your administrator"
             />
             <TextField
               fullWidth
@@ -127,45 +127,17 @@ function Login() {
 
           <Box sx={{ 
             mt: { xs: 2.5, sm: 3 }, 
-            p: { xs: 2, sm: 2.5 }, 
-            bgcolor: 'grey.50', 
-            borderRadius: 2, 
-            border: '1px solid', 
-            borderColor: 'divider' 
-          }}>
-            <Typography variant="caption" display="block" gutterBottom sx={{ fontWeight: 600, mb: 1.5, color: 'text.primary', fontSize: { xs: '0.75rem', sm: '0.8125rem' } }}>
-              Demo Credentials
-            </Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: { xs: 0.75, sm: 1 } }}>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: { xs: '0.75rem', sm: '0.8125rem' } }}>
-                <strong>Technician:</strong> tech1 / tech123
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: { xs: '0.75rem', sm: '0.8125rem' } }}>
-                <strong>Admin:</strong> admin1 / admin123
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: { xs: '0.75rem', sm: '0.8125rem' } }}>
-                <strong>Developer:</strong> dev1 / dev123
-              </Typography>
-            </Box>
-          </Box>
-          
-          <Box sx={{ 
-            mt: { xs: 2, sm: 2.5 }, 
             textAlign: 'center'
           }}>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: { xs: '0.875rem', sm: '0.9375rem' } }}>
-              Are you a client?
-            </Typography>
             <Link 
-              href="/client-login" 
+              href="/login" 
               underline="hover"
               sx={{ 
                 fontSize: { xs: '0.875rem', sm: '0.9375rem' },
-                color: 'primary.main',
-                fontWeight: 500
+                color: 'primary.main'
               }}
             >
-              Go to Client Portal
+              Staff Login
             </Link>
           </Box>
         </Paper>
@@ -174,5 +146,5 @@ function Login() {
   );
 }
 
-export default Login;
+export default ClientLogin;
 
